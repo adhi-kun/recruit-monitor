@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 
 function VideoTile({ user, label, isLocal, videoRef, isMuted, isCameraOff, size = 'large' }) {
   const tileRef = useRef(null);

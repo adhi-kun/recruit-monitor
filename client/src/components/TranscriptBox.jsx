@@ -1,9 +1,11 @@
-import React, { useRef, useEffect, useCallback, useState } from 'react';
+import { useRef, useEffect, useCallback, useState } from 'react';
 import { useTranscriptStore } from '../store/useTranscriptStore.js';
 
-export default function TranscriptBox({ role, socket, roomId }) {
+export default function TranscriptBox({ role, socket, roomId, onFocus, onBlur }) {
   const text = useTranscriptStore((s) => s.text);
   const setText = useTranscriptStore((s) => s.setText);
+  const partialText = useTranscriptStore((s) => s.partialText);
+  const transcriptionUnavailable = useTranscriptStore((s) => s.transcriptionUnavailable);
   const containerRef = useRef(null);
   const [isFocused, setIsFocused] = useState(false);
   const debounceRef = useRef(null);
@@ -13,7 +15,7 @@ export default function TranscriptBox({ role, socket, roomId }) {
     if (!isFocused && containerRef.current) {
       containerRef.current.scrollTop = containerRef.current.scrollHeight;
     }
-  }, [text, isFocused]);
+  }, [text, partialText, isFocused]);
 
   // Interviewer onChange with debounced emit
   const handleChange = useCallback((e) => {
@@ -27,6 +29,17 @@ export default function TranscriptBox({ role, socket, roomId }) {
       }
     }, 500);
   }, [socket, roomId, setText]);
+
+  // Focus/blur handlers — wire both internal state and external callbacks (Fix 1)
+  const handleFocus = useCallback(() => {
+    setIsFocused(true);
+    if (onFocus) onFocus();
+  }, [onFocus]);
+
+  const handleBlur = useCallback(() => {
+    setIsFocused(false);
+    if (onBlur) onBlur();
+  }, [onBlur]);
 
   // Cleanup debounce on unmount
   useEffect(() => {
@@ -60,8 +73,8 @@ export default function TranscriptBox({ role, socket, roomId }) {
             ref={containerRef}
             value={text}
             onChange={handleChange}
-            onFocus={() => setIsFocused(true)}
-            onBlur={() => setIsFocused(false)}
+            onFocus={handleFocus}
+            onBlur={handleBlur}
             placeholder="Transcript will appear here as the candidate speaks…"
             className="w-full h-full bg-transparent text-surface-200 text-sm leading-relaxed 
                        resize-none focus:outline-none placeholder:text-surface-600 font-sans"
@@ -71,6 +84,11 @@ export default function TranscriptBox({ role, socket, roomId }) {
             ref={containerRef}
             className="w-full h-full overflow-y-auto pointer-events-auto select-none"
           >
+            {transcriptionUnavailable && (
+              <p className="text-yellow-400 text-xs mb-2">
+                ⚠ Transcription temporarily unavailable
+              </p>
+            )}
             {text ? (
               <p className="text-surface-200 text-sm leading-relaxed whitespace-pre-wrap">{text}</p>
             ) : (
@@ -78,6 +96,11 @@ export default function TranscriptBox({ role, socket, roomId }) {
                 {role === 'candidate'
                   ? 'Your speech will appear here as you speak…'
                   : 'Transcript will appear here when the candidate speaks…'}
+              </p>
+            )}
+            {partialText && (
+              <p className="text-surface-200 text-sm leading-relaxed whitespace-pre-wrap italic opacity-60 mt-0.5">
+                {partialText}
               </p>
             )}
           </div>

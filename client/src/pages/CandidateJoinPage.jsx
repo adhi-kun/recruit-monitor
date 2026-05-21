@@ -1,8 +1,8 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useRoomStore } from '../store/useRoomStore.js';
 import { useTranscriptStore } from '../store/useTranscriptStore.js';
-import { getSocket, disconnectSocket } from '../hooks/useSocket.js';
+import { getSocket } from '../hooks/useSocket.js';
 
 export default function CandidateJoinPage() {
   const navigate = useNavigate();

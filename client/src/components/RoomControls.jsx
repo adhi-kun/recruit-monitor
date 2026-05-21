@@ -1,5 +1,3 @@
-import React from 'react';
-
 export default function RoomControls({ role, isMuted, isCameraOff, onToggleMute, onToggleCamera, onEndCall }) {
   return (
     <div className="flex items-center justify-between px-6 py-4 border-t border-surface-800 bg-surface-950/80 backdrop-blur-lg">

@@ -1,9 +1,9 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/useAuthStore.js';
 import { useRoomStore } from '../store/useRoomStore.js';
 import { useTranscriptStore } from '../store/useTranscriptStore.js';
-import { getSocket, disconnectSocket } from '../hooks/useSocket.js';
+import { getSocket } from '../hooks/useSocket.js';
 import useAgora from '../hooks/useAgora.js';
 import useTranscript from '../hooks/useTranscript.js';
 import VideoGrid from '../components/VideoGrid.jsx';
@@ -25,11 +25,18 @@ export default function InterviewRoom() {
   const clearRoom = useRoomStore((s) => s.clearRoom);
   const clearText = useTranscriptStore((s) => s.clearText);
   const setText = useTranscriptStore((s) => s.setText);
+  const setPartialText = useTranscriptStore((s) => s.setPartialText);
+  const setTranscriptionUnavailable = useTranscriptStore((s) => s.setTranscriptionUnavailable);
+  const transcriptionUnavailable = useTranscriptStore((s) => s.transcriptionUnavailable);
 
   const [terminated, setTerminated] = useState(null);
   const [countdown, setCountdown] = useState(3);
   const [connectionLost, setConnectionLost] = useState(false);
-  const [transcriptUnavailable, setTranscriptUnavailable] = useState(false);
+
+  // Fix 1 — interviewer focus tracking ref
+  const interviewerHasFocusRef = useRef(false);
+  // Sequence number tracking for out-of-order event rejection
+  const lastSeqRef = useRef(0);
 
   const role = user?.role ?? userRole;
 
@@ -50,7 +57,7 @@ export default function InterviewRoom() {
   // Agora hook
   const {
     localVideoRef, remoteUsers, localAudioTrack,
-    isJoined, isMuted, isCameraOff,
+    isMuted, isCameraOff,
     toggleMute, toggleCamera, leaveChannel
   } = useAgora({
     role,
@@ -75,7 +82,30 @@ export default function InterviewRoom() {
     };
 
     const handleTranscriptBroadcast = ({ text }) => {
+      if (role === 'interviewer' && interviewerHasFocusRef.current) return; // Fix 1
       setText(text);
+    };
+
+    const handleTranscriptPartial = ({ text, sequenceNumber }) => {
+      if (role === 'candidate') return; // candidate handles via useTranscript
+      if (sequenceNumber != null && sequenceNumber <= lastSeqRef.current) return;
+      setPartialText(text || '');
+    };
+
+    const handleTranscriptFinal = ({ fullText, sequenceNumber }) => {
+      if (role === 'candidate') return;
+      if (role === 'interviewer' && interviewerHasFocusRef.current) return; // Fix 1
+      if (sequenceNumber != null && sequenceNumber < lastSeqRef.current) return;
+      lastSeqRef.current = sequenceNumber || 0;
+      setText(fullText);
+      setPartialText('');
+      setTranscriptionUnavailable(false);
+    };
+
+    const handleTranscriptError = ({ message }) => {
+      if (role === 'candidate') return;
+      console.warn('Transcription error:', message);
+      setTranscriptionUnavailable(true);
     };
 
     const handleCandidateJoined = ({ candidateName: name }) => {
@@ -88,6 +118,9 @@ export default function InterviewRoom() {
 
     socket.on('room:terminated', handleTerminated);
     socket.on('transcript:broadcast', handleTranscriptBroadcast);
+    socket.on('transcript:partial', handleTranscriptPartial);
+    socket.on('transcript:final', handleTranscriptFinal);
+    socket.on('transcript:error', handleTranscriptError);
 
     if (role === 'interviewer') {
       socket.on('room:candidate-joined', handleCandidateJoined);
@@ -101,6 +134,9 @@ export default function InterviewRoom() {
     return () => {
       socket.off('room:terminated', handleTerminated);
       socket.off('transcript:broadcast', handleTranscriptBroadcast);
+      socket.off('transcript:partial', handleTranscriptPartial);
+      socket.off('transcript:final', handleTranscriptFinal);
+      socket.off('transcript:error', handleTranscriptError);
       if (role === 'interviewer') {
         socket.off('room:candidate-joined', handleCandidateJoined);
         socket.off('room:candidate-left', handleCandidateLeftEvt);
@@ -108,7 +144,7 @@ export default function InterviewRoom() {
       socket.off('disconnect');
       socket.off('connect');
     };
-  }, [socket, role, setText, setCandidateJoined, setCandidateLeft]);
+  }, [socket, role, setText, setPartialText, setTranscriptionUnavailable, setCandidateJoined, setCandidateLeft]);
 
   // Terminated countdown & redirect
   useEffect(() => {
@@ -159,7 +195,7 @@ export default function InterviewRoom() {
       )}
 
       {/* Transcript unavailable banner */}
-      {transcriptUnavailable && (
+      {transcriptionUnavailable && role !== 'candidate' && (
         <div className="bg-warning-500/20 border-b border-warning-500/30 px-4 py-2 text-center">
           <span className="text-warning-400 text-sm font-medium">
             ⚠ Transcription unavailable
@@ -221,6 +257,8 @@ export default function InterviewRoom() {
             role={role}
             socket={socket}
             roomId={roomId}
+            onFocus={() => { interviewerHasFocusRef.current = true; }}
+            onBlur={() => { interviewerHasFocusRef.current = false; }}
           />
         </div>
       </div>

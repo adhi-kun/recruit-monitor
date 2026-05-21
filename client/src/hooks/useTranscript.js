@@ -1,116 +1,91 @@
 import { useEffect, useRef } from 'react';
-import { DEEPGRAM_API_KEY } from '../config.js';
 import { useTranscriptStore } from '../store/useTranscriptStore.js';
 
 export default function useTranscript({ localAudioTrack, socket, roomId, enabled }) {
-  const retryCountRef = useRef(0);
-  const maxRetries = 5;
   const cleanupRef = useRef(null);
 
-  useEffect(() => {
-    if (!enabled || !localAudioTrack || !socket || !roomId) return;
+  // Refs for socket and roomId — avoid stale closures without rebuilding AudioContext on every change
+  const socketRef = useRef(socket);
+  const roomIdRef = useRef(roomId);
+  useEffect(() => { socketRef.current = socket; }, [socket]);
+  useEffect(() => { roomIdRef.current = roomId; }, [roomId]);
 
-    // Feature detection
+  // Sequence number tracking for out-of-order event rejection
+  const lastSeqRef = useRef(0);
+
+  useEffect(() => {
+    if (!enabled || !localAudioTrack || !socketRef.current || !roomIdRef.current) return;
     if (!window.AudioWorklet) {
       console.warn('AudioWorklet not supported — transcription disabled');
       return;
     }
 
     let destroyed = false;
+    lastSeqRef.current = 0;
 
     async function startPipeline() {
       let audioContext = null;
       let source = null;
       let workletNode = null;
-      let ws = null;
 
       try {
-        // Get the underlying MediaStreamTrack from the Agora audio track
         const mediaStreamTrack = localAudioTrack.getMediaStreamTrack();
         const stream = new MediaStream([mediaStreamTrack]);
 
         audioContext = new AudioContext({ sampleRate: 16000 });
         await audioContext.audioWorklet.addModule('/audio-processor.js');
-
         source = audioContext.createMediaStreamSource(stream);
         workletNode = new AudioWorkletNode(audioContext, 'pcm-processor');
         source.connect(workletNode);
-        // Do NOT connect workletNode to audioContext.destination — causes echo
+        // Do NOT connect to audioContext.destination — causes echo
 
-        // Deepgram WebSocket
-        ws = new WebSocket(
-          'wss://api.deepgram.com/v1/listen' +
-          '?model=nova-2&language=en&punctuate=true' +
-          '&interim_results=false' +
-          '&endpointing=500' +
-          '&smart_format=true' +
-          '&encoding=linear16' +
-          '&sample_rate=16000' +
-          '&channels=1',
-          ['token', DEEPGRAM_API_KEY]
-        );
-
-        ws.onopen = () => {
-          console.log('Deepgram WebSocket connected');
-          retryCountRef.current = 0; // Reset retries on successful connection
-        };
-
-        ws.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data);
-            const transcript = data?.channel?.alternatives?.[0]?.transcript;
-            if (data.is_final && transcript) {
-              const current = useTranscriptStore.getState().text;
-              const newText = current + (current ? ' ' : '') + transcript;
-              useTranscriptStore.getState().setText(newText);
-              socket.emit('transcript:update', { roomId, text: newText });
-            }
-          } catch (err) {
-            console.warn('Deepgram message parse error:', err);
-          }
-        };
-
-        ws.onerror = (err) => {
-          console.warn('Deepgram WebSocket error:', err);
-        };
-
-        ws.onclose = (event) => {
-          console.log('Deepgram WebSocket closed:', event.code, event.reason);
-          if (!destroyed && event.code !== 1000 && retryCountRef.current < maxRetries) {
-            const delay = Math.pow(2, retryCountRef.current) * 1000;
-            retryCountRef.current++;
-            console.log(`Deepgram reconnecting in ${delay}ms (attempt ${retryCountRef.current})`);
-            setTimeout(() => {
-              if (!destroyed) {
-                cleanup();
-                startPipeline();
-              }
-            }, delay);
-          }
-        };
-
-        // Send audio data to Deepgram
+        // Send raw binary to server (no JSON wrapping)
         workletNode.port.onmessage = (event) => {
-          if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(event.data);
+          if (destroyed) return;
+          const buffer = event.data; // ArrayBuffer from worklet
+          const sock = socketRef.current;
+          if (buffer && buffer.byteLength > 0 && sock?.connected) {
+            sock.emit('transcript:audio-chunk', buffer);
           }
         };
 
-        // Store cleanup function
-        cleanupRef.current = cleanup;
+        // Ordering enforcement on incoming events
+        const handlePartial = ({ text, sequenceNumber }) => {
+          if (sequenceNumber != null && sequenceNumber <= lastSeqRef.current) return; // stale
+          // Partials don't advance lastSeqRef — only finals do
+          useTranscriptStore.getState().setPartialText(text || '');
+        };
 
-        function cleanup() {
+        const handleFinal = ({ fullText, sequenceNumber }) => {
+          if (sequenceNumber != null && sequenceNumber < lastSeqRef.current) return; // stale
+          lastSeqRef.current = sequenceNumber || 0;
+          useTranscriptStore.getState().setText(fullText);
+          useTranscriptStore.getState().setPartialText('');
+          useTranscriptStore.getState().setTranscriptionUnavailable(false);
+        };
+
+        const handleError = ({ message }) => {
+          console.warn('Transcription error:', message);
+          useTranscriptStore.getState().setTranscriptionUnavailable(true);
+        };
+
+        const sock = socketRef.current;
+        sock.on('transcript:partial', handlePartial);
+        sock.on('transcript:final', handleFinal);
+        sock.on('transcript:error', handleError);
+
+        cleanupRef.current = () => {
+          sock.off('transcript:partial', handlePartial);
+          sock.off('transcript:final', handleFinal);
+          sock.off('transcript:error', handleError);
           try {
             if (workletNode) workletNode.disconnect();
             if (source) source.disconnect();
             if (audioContext && audioContext.state !== 'closed') audioContext.close();
-            if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-              ws.close(1000);
-            }
           } catch (err) {
             console.warn('Transcript cleanup error:', err);
           }
-        }
+        };
 
       } catch (err) {
         console.error('Transcript pipeline error:', err);
@@ -125,6 +100,9 @@ export default function useTranscript({ localAudioTrack, socket, roomId, enabled
         cleanupRef.current();
         cleanupRef.current = null;
       }
+      useTranscriptStore.getState().setPartialText('');
     };
-  }, [localAudioTrack, enabled]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [localAudioTrack, enabled]);
+  // socket and roomId intentionally accessed via refs — adding them as deps
+  // would tear down and recreate the AudioContext on every socket identity change
 }

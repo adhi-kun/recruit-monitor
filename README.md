@@ -18,7 +18,7 @@ An internal recruitment interview monitoring platform enabling interviewers to c
 | Frontend | React 18, Vite, Tailwind CSS v3, Zustand, React Router v6 |
 | Backend | Node.js, Express, Socket.IO |
 | RTC | Agora Web SDK |
-| Speech-to-Text | Deepgram Nova-2 (native WebSocket) |
+| Speech-to-Text | Deepgram Nova-2 (server-side WebSocket) |
 | Auth | JWT + bcryptjs |
 | State | In-memory Node.js Maps |
 
@@ -42,6 +42,7 @@ npm install --workspaces
 cp server/.env.example server/.env
 cp client/.env.example client/.env
 # Edit both .env files with your actual keys
+# Keep DEEPGRAM_API_KEY in server/.env only
 
 # Start development
 npm run dev:server   # Terminal 1 — starts on port 4000
@@ -93,6 +94,7 @@ interview-platform/
    - `SUPERVISOR_EMAIL` — supervisor login email
    - `SUPERVISOR_PASSWORD` — supervisor login password
    - `AGORA_APP_ID` — from Agora Console
+   - `DEEPGRAM_API_KEY` - from Deepgram Console
 5. Note the Railway URL after deploy
 
 ### Frontend on Vercel
@@ -104,7 +106,6 @@ interview-platform/
    - `VITE_API_URL` — Railway backend URL
    - `VITE_SOCKET_URL` — Railway backend URL (same)
    - `VITE_AGORA_APP_ID` — from Agora Console
-   - `VITE_DEEPGRAM_API_KEY` — from Deepgram Console
 5. Redeploy after adding variables
 
 ## How It Works

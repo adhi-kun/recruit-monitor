@@ -151,6 +151,7 @@ export default function useAgora({ role, channelName, username }) {
   // Auto-join on mount
   useEffect(() => {
     if (channelName && username && !isJoined && !isConnecting) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       joinChannel();
     }
   }, [channelName, username]); // eslint-disable-line react-hooks/exhaustive-deps

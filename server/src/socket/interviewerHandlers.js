@@ -1,7 +1,7 @@
 export function setupInterviewerHandlers(
   interviewerNS, candidateNS, supervisorNS,
   broadcastToRoom, broadcastActiveRoomUpdate,
-  roomRegistry, sanitizeRoom
+  roomRegistry, sanitizeRoom, deepgramManager
 ) {
   interviewerNS.on('connection', (socket) => {
     console.log(`Interviewer connected: ${socket.id} (${socket.user.email})`);
@@ -34,7 +34,7 @@ export function setupInterviewerHandlers(
       const room = roomRegistry.getRoomById(roomId);
       if (!room || room.interviewerSocketId !== socket.id) return;
       roomRegistry.updateRoom(roomId, { transcriptText: text });
-      broadcastToRoom(roomId, 'transcript:broadcast', { text });
+      broadcastToRoom(roomId, 'transcript:broadcast', { text, source: 'manual' });
     });
 
     // interviewer:leave — explicit
@@ -42,6 +42,7 @@ export function setupInterviewerHandlers(
       const room = roomRegistry.getRoomBySocketId(socket.id);
       if (!room) return;
       console.log(`Interviewer leaving room: ${room.roomCode}`);
+      deepgramManager.stopSession(room.roomId);
       roomRegistry.terminateRoom(room.roomId);
       broadcastToRoom(room.roomId, 'room:terminated', { reason: 'Interviewer ended the session' });
       broadcastActiveRoomUpdate();
@@ -52,6 +53,7 @@ export function setupInterviewerHandlers(
       console.log(`Interviewer disconnected: ${socket.id}`);
       const room = roomRegistry.getRoomBySocketId(socket.id);
       if (!room) return;
+      deepgramManager.stopSession(room.roomId);
       roomRegistry.terminateRoom(room.roomId);
       broadcastToRoom(room.roomId, 'room:terminated', { reason: 'Interviewer disconnected' });
       broadcastActiveRoomUpdate();

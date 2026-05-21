@@ -1,5 +1,3 @@
-import React from 'react';
-
 export default function ParticipantPanel({ interviewerName, candidateName }) {
   return (
     <div className="glass-card p-4">

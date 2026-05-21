@@ -6,6 +6,7 @@ import * as roomRegistry from '../state/roomRegistry.js';
 import { setupInterviewerHandlers } from './interviewerHandlers.js';
 import { setupCandidateHandlers } from './candidateHandlers.js';
 import { setupSupervisorHandlers } from './supervisorHandlers.js';
+import { DeepgramManager } from '../services/deepgram/DeepgramManager.js';
 
 export function setupSockets(httpServer, socketCorsConfig = {}) {
   // Create Socket.IO server
@@ -73,6 +74,11 @@ export function setupSockets(httpServer, socketCorsConfig = {}) {
   }
 
   // ─────────────────────────────────────────────────────────────
+  // Deepgram session manager
+  // ─────────────────────────────────────────────────────────────
+  const deepgramManager = new DeepgramManager();
+
+  // ─────────────────────────────────────────────────────────────
   // Register namespace handlers
   // ─────────────────────────────────────────────────────────────
   setupInterviewerHandlers(
@@ -82,7 +88,8 @@ export function setupSockets(httpServer, socketCorsConfig = {}) {
     broadcastToRoom,
     broadcastActiveRoomUpdate,
     roomRegistry,
-    sanitizeRoom
+    sanitizeRoom,
+    deepgramManager
   );
 
   setupCandidateHandlers(
@@ -92,7 +99,8 @@ export function setupSockets(httpServer, socketCorsConfig = {}) {
     broadcastToRoom,
     broadcastActiveRoomUpdate,
     roomRegistry,
-    sanitizeRoom
+    sanitizeRoom,
+    deepgramManager
   );
 
   setupSupervisorHandlers(
@@ -110,6 +118,7 @@ export function setupSockets(httpServer, socketCorsConfig = {}) {
   // ─────────────────────────────────────────────────────────────
   setInterval(() => {
     roomRegistry.cleanupIdleRooms((roomId) => {
+      deepgramManager.stopSession(roomId);
       broadcastToRoom(roomId, 'room:terminated', {
         reason: 'Room expired due to inactivity'
       });
@@ -117,6 +126,12 @@ export function setupSockets(httpServer, socketCorsConfig = {}) {
       broadcastActiveRoomUpdate();
     });
   }, 5 * 60 * 1000);
+
+  // ─────────────────────────────────────────────────────────────
+  // Graceful shutdown — stop all Deepgram sessions
+  // ─────────────────────────────────────────────────────────────
+  process.once('SIGTERM', () => deepgramManager.stopAll());
+  process.once('SIGINT',  () => deepgramManager.stopAll());
 
   // ─────────────────────────────────────────────────────────────
   // Logging
