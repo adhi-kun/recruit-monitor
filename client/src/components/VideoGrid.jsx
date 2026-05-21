@@ -1,19 +1,21 @@
 import { useEffect, useRef } from 'react';
 
-function VideoTile({ user, label, isLocal, videoRef, isMuted, isCameraOff, size = 'large' }) {
+function VideoTile({ user, label, isLocal, videoRef, localVideoTrack, isMuted, isCameraOff, size = 'large' }) {
   const tileRef = useRef(null);
   const ref = isLocal ? videoRef : tileRef;
 
   useEffect(() => {
-    if (!isLocal && user?.videoTrack && tileRef.current) {
-      user.videoTrack.play(tileRef.current);
+    const track = isLocal ? localVideoTrack : user?.videoTrack;
+    const container = isLocal ? videoRef?.current : tileRef.current;
+    if (track && container) {
+      track.play(container);
     }
     return () => {
-      if (!isLocal && user?.videoTrack) {
-        try { user.videoTrack.stop(); } catch (e) { console.warn(e); }
+      if (track) {
+        try { track.stop(); } catch (e) { console.warn(e); }
       }
     };
-  }, [user?.videoTrack, isLocal]);
+  }, [user?.videoTrack, isLocal, localVideoTrack, videoRef]);
 
   const sizeClasses = size === 'large'
     ? 'w-full h-full min-h-[300px]'
@@ -49,7 +51,7 @@ function VideoTile({ user, label, isLocal, videoRef, isMuted, isCameraOff, size 
   );
 }
 
-export default function VideoGrid({ role, localVideoRef, remoteUsers, isMuted, isCameraOff, localName }) {
+export default function VideoGrid({ role, localVideoRef, localVideoTrack, remoteUsers, isMuted, isCameraOff, localName }) {
   if (role === 'supervisor') {
     // Supervisor: two remote tiles, no local
     return (
@@ -97,6 +99,7 @@ export default function VideoGrid({ role, localVideoRef, remoteUsers, isMuted, i
       <VideoTile
         isLocal
         videoRef={localVideoRef}
+        localVideoTrack={localVideoTrack}
         label={localName || 'You'}
         isMuted={isMuted}
         isCameraOff={isCameraOff}

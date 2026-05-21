@@ -1,154 +1,231 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import AgoraRTC from 'agora-rtc-sdk-ng';
 import { AGORA_APP_ID } from '../config.js';
+import { mediaLog } from '../utils/mediaLogger.js';
 
-AgoraRTC.setLogLevel(3); // Warnings only
+AgoraRTC.setLogLevel(3);
 
 export default function useAgora({ role, channelName, username }) {
   const clientRef = useRef(null);
   const localVideoRef = useRef(null);
+  const localAudioTrackRef = useRef(null);
   const localVideoTrackRef = useRef(null);
+  const remoteUsersRef = useRef([]);
+  const joiningRef = useRef(false);
+  const mountedRef = useRef(true);
+  const recreateAudioTrackRef = useRef(null);
 
   const [localAudioTrack, setLocalAudioTrack] = useState(null);
+  const [localVideoTrack, setLocalVideoTrack] = useState(null);
   const [remoteUsers, setRemoteUsers] = useState([]);
   const [isJoined, setIsJoined] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [isCameraOff, setIsCameraOff] = useState(false);
 
-  // Filter out supervisor UIDs (_sv_ prefix)
-  const filterSupervisor = useCallback((users) => {
-    return users.filter(u => !String(u.uid).startsWith('_sv_'));
+  const publishTrack = useCallback(async (track) => {
+    const client = clientRef.current;
+    if (!client || !track) return;
+    try {
+      await client.publish(track);
+      mediaLog('info', 'agora track published', { role, channelName, kind: track.trackMediaType });
+    } catch (err) {
+      if (!String(err?.message || '').includes('already published')) {
+        mediaLog('warn', 'agora publish failed', { role, channelName, reason: err.message });
+      }
+    }
+  }, [channelName, role]);
+
+  const updateRemoteUsers = useCallback(() => {
+    const visible = remoteUsersRef.current.filter((u) => !String(u.uid).startsWith('_sv_'));
+    setRemoteUsers([...visible]);
   }, []);
 
-  const joinChannel = useCallback(async () => {
-    if (isConnecting || isJoined) return;
-    if (!channelName || !username) return;
+  const bindClientEvents = useCallback((client) => {
+    client.removeAllListeners();
+    remoteUsersRef.current = [];
 
+    client.on('user-published', async (user, mediaType) => {
+      try {
+        await client.subscribe(user, mediaType);
+        const existing = remoteUsersRef.current.find((u) => u.uid === user.uid);
+        if (existing) {
+          Object.assign(existing, user);
+        } else {
+          remoteUsersRef.current.push(user);
+        }
+        if (mediaType === 'audio' && user.audioTrack) user.audioTrack.play();
+        updateRemoteUsers();
+        mediaLog('info', 'agora remote subscribed', { role, channelName, uid: String(user.uid), mediaType });
+      } catch (err) {
+        mediaLog('warn', 'agora remote subscribe failed', { role, channelName, mediaType, reason: err.message });
+      }
+    });
+
+    client.on('user-unpublished', (user, mediaType) => {
+      const existing = remoteUsersRef.current.find((u) => u.uid === user.uid);
+      if (existing) {
+        if (mediaType === 'audio') existing.audioTrack = null;
+        if (mediaType === 'video') existing.videoTrack = null;
+      }
+      updateRemoteUsers();
+      mediaLog('info', 'agora remote unpublished', { role, channelName, uid: String(user.uid), mediaType });
+    });
+
+    client.on('user-left', (user) => {
+      remoteUsersRef.current = remoteUsersRef.current.filter((u) => u.uid !== user.uid);
+      updateRemoteUsers();
+      mediaLog('info', 'agora remote left', { role, channelName, uid: String(user.uid) });
+    });
+
+    client.on('connection-state-change', (curState, prevState, reason) => {
+      mediaLog('info', 'agora connection state changed', { role, channelName, curState, prevState, reason });
+    });
+  }, [channelName, role, updateRemoteUsers]);
+
+  const recreateAudioTrack = useCallback(async () => {
+    if (role === 'supervisor' || !clientRef.current) return;
+    try {
+      const nextTrack = await AgoraRTC.createMicrophoneAudioTrack();
+      nextTrack.on('track-ended', () => {
+        mediaLog('warn', 'agora audio track ended', { role, channelName });
+        recreateAudioTrackRef.current?.();
+      });
+      localAudioTrackRef.current?.close();
+      localAudioTrackRef.current = nextTrack;
+      setLocalAudioTrack(nextTrack);
+      setIsMuted(false);
+      await publishTrack(nextTrack);
+      mediaLog('info', 'agora audio track recreated', { role, channelName });
+    } catch (err) {
+      mediaLog('error', 'agora audio track recreate failed', { role, channelName, reason: err.message });
+    }
+  }, [channelName, publishTrack, role]);
+
+  useEffect(() => {
+    recreateAudioTrackRef.current = recreateAudioTrack;
+  }, [recreateAudioTrack]);
+
+  const joinChannel = useCallback(async () => {
+    if (joiningRef.current || isJoined) return;
+    if (!channelName || !username || !AGORA_APP_ID) return;
+
+    joiningRef.current = true;
     setIsConnecting(true);
 
     try {
-      // Create client
       const client = AgoraRTC.createClient({ mode: 'rtc', codec: 'vp8' });
       clientRef.current = client;
+      bindClientEvents(client);
 
-      // Remove all listeners before registering to prevent duplicates on retry
-      client.removeAllListeners();
-
-      const usersRef = [];
-
-      client.on('user-published', async (user, mediaType) => {
-        await client.subscribe(user, mediaType);
-        const idx = usersRef.findIndex(u => u.uid === user.uid);
-        if (idx >= 0) {
-          usersRef[idx] = { ...usersRef[idx], ...user };
-        } else {
-          usersRef.push({ uid: user.uid, audioTrack: user.audioTrack, videoTrack: user.videoTrack });
-        }
-        setRemoteUsers(filterSupervisor([...usersRef]));
-
-        if (mediaType === 'audio' && user.audioTrack) {
-          user.audioTrack.play();
-        }
-      });
-
-      client.on('user-unpublished', (user, mediaType) => {
-        const idx = usersRef.findIndex(u => u.uid === user.uid);
-        if (idx >= 0) {
-          if (mediaType === 'audio') usersRef[idx] = { ...usersRef[idx], audioTrack: null };
-          if (mediaType === 'video') usersRef[idx] = { ...usersRef[idx], videoTrack: null };
-          setRemoteUsers(filterSupervisor([...usersRef]));
-        }
-      });
-
-      client.on('user-left', (user) => {
-        const idx = usersRef.findIndex(u => u.uid === user.uid);
-        if (idx >= 0) usersRef.splice(idx, 1);
-        setRemoteUsers(filterSupervisor([...usersRef]));
-      });
-
-      // Join channel
-      const uid = role === 'supervisor' ? `_sv_${username}` : username;
+      const uid = role === 'supervisor' && !String(username).startsWith('_sv_')
+        ? `_sv_${username}`
+        : username;
       await client.join(AGORA_APP_ID, channelName, null, uid);
-
-      // Supervisor doesn't publish tracks
-      let audioTrack = null;
-      let videoTrack = null;
+      mediaLog('info', 'agora joined', { role, channelName, uid: String(uid) });
 
       if (role !== 'supervisor') {
         try {
-          audioTrack = await AgoraRTC.createMicrophoneAudioTrack();
+          const audioTrack = await AgoraRTC.createMicrophoneAudioTrack();
+          audioTrack.on('track-ended', () => {
+            mediaLog('warn', 'agora audio track ended', { role, channelName });
+            recreateAudioTrackRef.current?.();
+          });
+          localAudioTrackRef.current = audioTrack;
+          setLocalAudioTrack(audioTrack);
         } catch (err) {
-          console.warn('Microphone access failed:', err);
+          mediaLog('warn', 'agora microphone unavailable', { role, channelName, reason: err.message });
         }
 
         try {
-          videoTrack = await AgoraRTC.createCameraVideoTrack();
+          const videoTrack = await AgoraRTC.createCameraVideoTrack();
+          videoTrack.on('track-ended', () => mediaLog('warn', 'agora video track ended', { role, channelName }));
+          localVideoTrackRef.current = videoTrack;
+          setLocalVideoTrack(videoTrack);
         } catch (err) {
-          console.warn('Camera access failed:', err);
+          mediaLog('warn', 'agora camera unavailable', { role, channelName, reason: err.message });
         }
 
-        const tracksToPublish = [audioTrack, videoTrack].filter(Boolean);
-        if (tracksToPublish.length > 0) {
-          await client.publish(tracksToPublish);
-        }
-
-        if (videoTrack && localVideoRef.current) {
-          videoTrack.play(localVideoRef.current);
-        }
-        localVideoTrackRef.current = videoTrack;
+        const tracks = [localAudioTrackRef.current, localVideoTrackRef.current].filter(Boolean);
+        if (tracks.length > 0) await client.publish(tracks);
+        mediaLog('info', 'agora local tracks ready', {
+          role,
+          channelName,
+          hasAudio: !!localAudioTrackRef.current,
+          hasVideo: !!localVideoTrackRef.current,
+        });
       }
 
-      // Batch all setState at the end
-      setLocalAudioTrack(audioTrack);
+      if (!mountedRef.current) return;
       setIsJoined(true);
-      setIsConnecting(false);
-
     } catch (err) {
-      console.error('Agora join failed:', err);
-      setIsConnecting(false);
+      mediaLog('error', 'agora join failed', { role, channelName, reason: err.message });
+    } finally {
+      joiningRef.current = false;
+      if (mountedRef.current) setIsConnecting(false);
     }
-  }, [channelName, username, role, isConnecting, isJoined, filterSupervisor]);
+  }, [bindClientEvents, channelName, isJoined, role, username]);
 
   const leaveChannel = useCallback(async () => {
     try {
-      if (localAudioTrack) {
-        localAudioTrack.stop();
-        localAudioTrack.close();
-      }
-      if (localVideoTrackRef.current) {
-        localVideoTrackRef.current.stop();
-        localVideoTrackRef.current.close();
-      }
+      localAudioTrackRef.current?.stop();
+      localAudioTrackRef.current?.close();
+      localVideoTrackRef.current?.stop();
+      localVideoTrackRef.current?.close();
       if (clientRef.current) {
         await clientRef.current.leave();
         clientRef.current.removeAllListeners();
-        clientRef.current = null;
       }
+      mediaLog('info', 'agora left', { role, channelName });
     } catch (err) {
-      console.warn('Agora leave error:', err);
+      mediaLog('warn', 'agora leave failed', { role, channelName, reason: err.message });
     }
-    setLocalAudioTrack(null);
+    clientRef.current = null;
+    localAudioTrackRef.current = null;
     localVideoTrackRef.current = null;
+    remoteUsersRef.current = [];
+    setLocalAudioTrack(null);
+    setLocalVideoTrack(null);
     setRemoteUsers([]);
     setIsJoined(false);
     setIsMuted(false);
     setIsCameraOff(false);
-  }, [localAudioTrack]);
+  }, [channelName, role]);
 
   const toggleMute = useCallback(async () => {
-    if (!localAudioTrack) return;
-    await localAudioTrack.setEnabled(isMuted);
-    setIsMuted(!isMuted);
-  }, [localAudioTrack, isMuted]);
+    const track = localAudioTrackRef.current;
+    if (!track) return;
+    const nextMuted = !isMuted;
+    try {
+      if (typeof track.setMuted === 'function') {
+        await track.setMuted(nextMuted);
+      } else {
+        await track.setEnabled(!nextMuted);
+      }
+      setIsMuted(nextMuted);
+      mediaLog('info', 'agora audio mute toggled', { role, channelName, muted: nextMuted });
+    } catch (err) {
+      mediaLog('warn', 'agora audio mute toggle failed', { role, channelName, reason: err.message });
+    }
+  }, [channelName, isMuted, role]);
 
   const toggleCamera = useCallback(async () => {
-    if (!localVideoTrackRef.current) return;
-    await localVideoTrackRef.current.setEnabled(isCameraOff);
-    setIsCameraOff(!isCameraOff);
-  }, [isCameraOff]);
+    const track = localVideoTrackRef.current;
+    if (!track) return;
+    const nextOff = !isCameraOff;
+    try {
+      if (typeof track.setMuted === 'function') {
+        await track.setMuted(nextOff);
+      } else {
+        await track.setEnabled(!nextOff);
+      }
+      setIsCameraOff(nextOff);
+      mediaLog('info', 'agora camera toggled', { role, channelName, cameraOff: nextOff });
+    } catch (err) {
+      mediaLog('warn', 'agora camera toggle failed', { role, channelName, reason: err.message });
+    }
+  }, [channelName, isCameraOff, role]);
 
-  // Auto-join on mount
   useEffect(() => {
     if (channelName && username && !isJoined && !isConnecting) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -156,21 +233,17 @@ export default function useAgora({ role, channelName, username }) {
     }
   }, [channelName, username]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Cleanup on unmount
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
-      if (clientRef.current) {
-        if (localAudioTrack) { localAudioTrack.stop(); localAudioTrack.close(); }
-        if (localVideoTrackRef.current) { localVideoTrackRef.current.stop(); localVideoTrackRef.current.close(); }
-        clientRef.current.leave().catch(console.warn);
-        clientRef.current.removeAllListeners();
-        clientRef.current = null;
-      }
+      mountedRef.current = false;
+      leaveChannel();
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [leaveChannel]);
 
   return {
     localVideoRef,
+    localVideoTrack,
     remoteUsers,
     localAudioTrack,
     isJoined,
@@ -180,6 +253,6 @@ export default function useAgora({ role, channelName, username }) {
     toggleMute,
     toggleCamera,
     leaveChannel,
-    joinChannel
+    joinChannel,
   };
 }

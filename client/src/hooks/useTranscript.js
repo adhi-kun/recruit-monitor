@@ -1,108 +1,180 @@
 import { useEffect, useRef } from 'react';
 import { useTranscriptStore } from '../store/useTranscriptStore.js';
+import { mediaLog } from '../utils/mediaLogger.js';
 
-export default function useTranscript({ localAudioTrack, socket, roomId, enabled }) {
+export default function useTranscript({ localAudioTrack, socket, roomId, enabled, paused = false }) {
   const cleanupRef = useRef(null);
-
-  // Refs for socket and roomId — avoid stale closures without rebuilding AudioContext on every change
+  const pipelineIdRef = useRef(null);
+  const pausedRef = useRef(paused);
   const socketRef = useRef(socket);
   const roomIdRef = useRef(roomId);
+  const lastSeqRef = useRef(0);
+  const emittedChunksRef = useRef(0);
+
   useEffect(() => { socketRef.current = socket; }, [socket]);
   useEffect(() => { roomIdRef.current = roomId; }, [roomId]);
-
-  // Sequence number tracking for out-of-order event rejection
-  const lastSeqRef = useRef(0);
+  useEffect(() => {
+    pausedRef.current = paused;
+    mediaLog('info', 'transcript pipeline pause changed', { roomId, paused });
+  }, [paused, roomId]);
 
   useEffect(() => {
     if (!enabled || !localAudioTrack || !socketRef.current || !roomIdRef.current) return;
     if (!window.AudioWorklet) {
-      console.warn('AudioWorklet not supported — transcription disabled');
+      mediaLog('warn', 'transcript audio worklet unsupported', { roomId: roomIdRef.current });
+      return;
+    }
+    if (cleanupRef.current && pipelineIdRef.current === localAudioTrack) {
+      mediaLog('warn', 'transcript duplicate pipeline prevented', { roomId: roomIdRef.current });
       return;
     }
 
     let destroyed = false;
+    let audioContext = null;
+    let source = null;
+    let workletNode = null;
+    let mediaStreamTrack = null;
+    let healthTimer = null;
     lastSeqRef.current = 0;
+    emittedChunksRef.current = 0;
+    pipelineIdRef.current = localAudioTrack;
+
+    const handlePartial = ({ text, sequenceNumber }) => {
+      if (sequenceNumber != null && sequenceNumber <= lastSeqRef.current) return;
+      useTranscriptStore.getState().setPartialText(text || '');
+    };
+
+    const handleFinal = ({ fullText, sequenceNumber }) => {
+      if (sequenceNumber != null && sequenceNumber < lastSeqRef.current) return;
+      lastSeqRef.current = sequenceNumber || 0;
+      useTranscriptStore.getState().setText(fullText);
+      useTranscriptStore.getState().setPartialText('');
+      useTranscriptStore.getState().setTranscriptionUnavailable(false);
+    };
+
+    const handleError = ({ message }) => {
+      mediaLog('warn', 'transcript server error', { roomId: roomIdRef.current, reason: message });
+      useTranscriptStore.getState().setTranscriptionUnavailable(true);
+    };
 
     async function startPipeline() {
-      let audioContext = null;
-      let source = null;
-      let workletNode = null;
-
       try {
-        const mediaStreamTrack = localAudioTrack.getMediaStreamTrack();
-        const stream = new MediaStream([mediaStreamTrack]);
+        mediaStreamTrack = localAudioTrack.getMediaStreamTrack();
+        if (!mediaStreamTrack || mediaStreamTrack.readyState === 'ended') {
+          mediaLog('warn', 'transcript media track unavailable', { roomId: roomIdRef.current });
+          return;
+        }
 
+        mediaStreamTrack.addEventListener('ended', handleTrackEnded);
+        mediaStreamTrack.addEventListener('mute', handleTrackMuted);
+        mediaStreamTrack.addEventListener('unmute', handleTrackUnmuted);
+
+        const stream = new MediaStream([mediaStreamTrack]);
         audioContext = new AudioContext({ sampleRate: 16000 });
         await audioContext.audioWorklet.addModule('/audio-processor.js');
         source = audioContext.createMediaStreamSource(stream);
         workletNode = new AudioWorkletNode(audioContext, 'pcm-processor');
         source.connect(workletNode);
-        // Do NOT connect to audioContext.destination — causes echo
 
-        // Send raw binary to server (no JSON wrapping)
-        workletNode.port.onmessage = (event) => {
-          if (destroyed) return;
-          const buffer = event.data; // ArrayBuffer from worklet
+        workletNode.port.onmessage = async (event) => {
+          if (destroyed || pausedRef.current) return;
+          if (audioContext?.state === 'suspended') {
+            try {
+              await audioContext.resume();
+            } catch (err) {
+              mediaLog('warn', 'transcript audio context resume failed', { roomId: roomIdRef.current, reason: err.message });
+            }
+          }
+
+          const buffer = event.data;
           const sock = socketRef.current;
           if (buffer && buffer.byteLength > 0 && sock?.connected) {
             sock.emit('transcript:audio-chunk', buffer);
+            emittedChunksRef.current++;
           }
-        };
-
-        // Ordering enforcement on incoming events
-        const handlePartial = ({ text, sequenceNumber }) => {
-          if (sequenceNumber != null && sequenceNumber <= lastSeqRef.current) return; // stale
-          // Partials don't advance lastSeqRef — only finals do
-          useTranscriptStore.getState().setPartialText(text || '');
-        };
-
-        const handleFinal = ({ fullText, sequenceNumber }) => {
-          if (sequenceNumber != null && sequenceNumber < lastSeqRef.current) return; // stale
-          lastSeqRef.current = sequenceNumber || 0;
-          useTranscriptStore.getState().setText(fullText);
-          useTranscriptStore.getState().setPartialText('');
-          useTranscriptStore.getState().setTranscriptionUnavailable(false);
-        };
-
-        const handleError = ({ message }) => {
-          console.warn('Transcription error:', message);
-          useTranscriptStore.getState().setTranscriptionUnavailable(true);
         };
 
         const sock = socketRef.current;
         sock.on('transcript:partial', handlePartial);
         sock.on('transcript:final', handleFinal);
         sock.on('transcript:error', handleError);
+        sock.on('connect', handleSocketConnect);
+        sock.on('disconnect', handleSocketDisconnect);
 
-        cleanupRef.current = () => {
-          sock.off('transcript:partial', handlePartial);
-          sock.off('transcript:final', handleFinal);
-          sock.off('transcript:error', handleError);
-          try {
-            if (workletNode) workletNode.disconnect();
-            if (source) source.disconnect();
-            if (audioContext && audioContext.state !== 'closed') audioContext.close();
-          } catch (err) {
-            console.warn('Transcript cleanup error:', err);
-          }
-        };
+        healthTimer = setInterval(() => {
+          mediaLog('info', 'transcript pipeline health', {
+            roomId: roomIdRef.current,
+            chunks: emittedChunksRef.current,
+            paused: pausedRef.current,
+            socketConnected: socketRef.current?.connected,
+            trackState: mediaStreamTrack?.readyState,
+            trackEnabled: mediaStreamTrack?.enabled,
+            audioContextState: audioContext?.state,
+          });
+        }, 15000);
+        healthTimer.unref?.();
 
+        cleanupRef.current = cleanup;
+        mediaLog('info', 'transcript pipeline started', { roomId: roomIdRef.current });
       } catch (err) {
-        console.error('Transcript pipeline error:', err);
+        mediaLog('error', 'transcript pipeline error', { roomId: roomIdRef.current, reason: err.message });
       }
+    }
+
+    function handleTrackEnded() {
+      mediaLog('warn', 'transcript media track ended', { roomId: roomIdRef.current });
+      useTranscriptStore.getState().setTranscriptionUnavailable(true);
+    }
+
+    function handleTrackMuted() {
+      mediaLog('info', 'transcript media track muted', { roomId: roomIdRef.current });
+    }
+
+    function handleTrackUnmuted() {
+      mediaLog('info', 'transcript media track unmuted', { roomId: roomIdRef.current });
+      audioContext?.resume?.().catch((err) => {
+        mediaLog('warn', 'transcript resume after unmute failed', { roomId: roomIdRef.current, reason: err.message });
+      });
+    }
+
+    function handleSocketConnect() {
+      mediaLog('info', 'transcript socket connected', { roomId: roomIdRef.current });
+    }
+
+    function handleSocketDisconnect(reason) {
+      mediaLog('warn', 'transcript socket disconnected', { roomId: roomIdRef.current, reason });
+    }
+
+    function cleanup() {
+      const sock = socketRef.current;
+      sock?.off('transcript:partial', handlePartial);
+      sock?.off('transcript:final', handleFinal);
+      sock?.off('transcript:error', handleError);
+      sock?.off('connect', handleSocketConnect);
+      sock?.off('disconnect', handleSocketDisconnect);
+      clearInterval(healthTimer);
+      mediaStreamTrack?.removeEventListener('ended', handleTrackEnded);
+      mediaStreamTrack?.removeEventListener('mute', handleTrackMuted);
+      mediaStreamTrack?.removeEventListener('unmute', handleTrackUnmuted);
+
+      try {
+        workletNode?.disconnect();
+        source?.disconnect();
+        if (audioContext && audioContext.state !== 'closed') audioContext.close();
+      } catch (err) {
+        mediaLog('warn', 'transcript cleanup failed', { roomId: roomIdRef.current, reason: err.message });
+      }
+      mediaLog('info', 'transcript pipeline stopped', { roomId: roomIdRef.current });
     }
 
     startPipeline();
 
     return () => {
       destroyed = true;
-      if (cleanupRef.current) {
-        cleanupRef.current();
-        cleanupRef.current = null;
-      }
+      cleanupRef.current?.();
+      cleanupRef.current = null;
+      pipelineIdRef.current = null;
       useTranscriptStore.getState().setPartialText('');
     };
   }, [localAudioTrack, enabled]);
-  // socket and roomId intentionally accessed via refs — adding them as deps
-  // would tear down and recreate the AudioContext on every socket identity change
 }

@@ -56,7 +56,7 @@ export default function InterviewRoom() {
 
   // Agora hook
   const {
-    localVideoRef, remoteUsers, localAudioTrack,
+    localVideoRef, localVideoTrack, remoteUsers, localAudioTrack,
     isMuted, isCameraOff,
     toggleMute, toggleCamera, leaveChannel
   } = useAgora({
@@ -70,7 +70,8 @@ export default function InterviewRoom() {
     localAudioTrack: role === 'candidate' ? localAudioTrack : null,
     socket: role === 'candidate' ? socket : null,
     roomId,
-    enabled: role === 'candidate'
+    enabled: role === 'candidate',
+    paused: isMuted
   });
 
   // Socket event handling
@@ -238,6 +239,7 @@ export default function InterviewRoom() {
             <VideoGrid
               role={role}
               localVideoRef={localVideoRef}
+              localVideoTrack={localVideoTrack}
               remoteUsers={remoteUsers}
               isMuted={isMuted}
               isCameraOff={isCameraOff}
