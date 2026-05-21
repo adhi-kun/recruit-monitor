@@ -103,6 +103,12 @@ app.get('/health', (_, res) => {
 // Create HTTP server
 const httpServer = http.createServer(app);
 
+app.get('/test-route', (_, res) => {
+  res.json({
+    ok: true
+  });
+});
+
 // Setup Socket.IO
 setupSockets(httpServer, {
   cors: {
