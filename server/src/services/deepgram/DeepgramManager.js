@@ -44,6 +44,7 @@ export class DeepgramManager {
 
     const existing = this._sessions.get(roomId);
     if (existing && (existing.state === 'active' || existing.state === 'connecting')) {
+      logger.info('deepgram session already active, skipping start', { roomId, state: existing.state });
       return;
     }
     if (existing) {

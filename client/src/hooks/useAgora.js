@@ -80,6 +80,9 @@ export default function useAgora({ role, channelName, username }) {
 
     client.on('connection-state-change', (curState, prevState, reason) => {
       mediaLog('info', 'agora connection state changed', { role, channelName, curState, prevState, reason });
+      if (curState === 'DISCONNECTED' && prevState === 'CONNECTED') {
+        mediaLog('warn', 'agora unexpected disconnect from live channel', { role, channelName, reason });
+      }
     });
   }, [channelName, role, updateRemoteUsers]);
 
@@ -87,6 +90,11 @@ export default function useAgora({ role, channelName, username }) {
     if (role === 'supervisor' || !clientRef.current) return;
     try {
       const nextTrack = await AgoraRTC.createMicrophoneAudioTrack();
+      if (!mountedRef.current || !clientRef.current) {
+        nextTrack.close();
+        mediaLog('warn', 'agora audio track recreate aborted (unmounted or client gone)', { role, channelName });
+        return;
+      }
       nextTrack.on('track-ended', () => {
         mediaLog('warn', 'agora audio track ended', { role, channelName });
         recreateAudioTrackRef.current?.();

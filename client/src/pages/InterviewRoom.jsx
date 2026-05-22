@@ -129,8 +129,10 @@ export default function InterviewRoom() {
     }
 
     // Connection lost banner
-    socket.on('disconnect', () => setConnectionLost(true));
-    socket.on('connect', () => setConnectionLost(false));
+    const handleConnect = () => setConnectionLost(false);
+    const handleDisconnect = () => setConnectionLost(true);
+    socket.on('connect', handleConnect);
+    socket.on('disconnect', handleDisconnect);
 
     return () => {
       socket.off('room:terminated', handleTerminated);
@@ -142,8 +144,8 @@ export default function InterviewRoom() {
         socket.off('room:candidate-joined', handleCandidateJoined);
         socket.off('room:candidate-left', handleCandidateLeftEvt);
       }
-      socket.off('disconnect');
-      socket.off('connect');
+      socket.off('connect', handleConnect);
+      socket.off('disconnect', handleDisconnect);
     };
   }, [socket, role, setText, setPartialText, setTranscriptionUnavailable, setCandidateJoined, setCandidateLeft]);
 

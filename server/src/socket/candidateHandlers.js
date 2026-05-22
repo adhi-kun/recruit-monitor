@@ -19,6 +19,8 @@ export function setupCandidateHandlers(
       socketId: socket.id,
     });
 
+    let audioChunkCount = 0;
+
     function attachCandidateToRoom(room, candidateName) {
       roomRegistry.updateRoom(room.roomId, {
         candidateSocketId: socket.id,
@@ -140,6 +142,15 @@ export function setupCandidateHandlers(
       if (!isValidAudioChunk(data)) return;
 
       deepgramManager.sendAudio(room.roomId, data);
+      audioChunkCount++;
+      if (audioChunkCount === 1 || audioChunkCount % 500 === 0) {
+        logger.info('candidate audio flowing', {
+          namespace: '/candidate',
+          socketId: socket.id,
+          roomId: room.roomId,
+          totalChunks: audioChunkCount,
+        });
+      }
     });
 
     socket.on('candidate:leave', () => {

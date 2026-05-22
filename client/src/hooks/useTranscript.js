@@ -6,6 +6,7 @@ export default function useTranscript({ localAudioTrack, socket, roomId, enabled
   const cleanupRef = useRef(null);
   const pipelineIdRef = useRef(null);
   const pausedRef = useRef(paused);
+  const audioContextRef = useRef(null);
   const socketRef = useRef(socket);
   const roomIdRef = useRef(roomId);
   const lastSeqRef = useRef(0);
@@ -14,8 +15,18 @@ export default function useTranscript({ localAudioTrack, socket, roomId, enabled
   useEffect(() => { socketRef.current = socket; }, [socket]);
   useEffect(() => { roomIdRef.current = roomId; }, [roomId]);
   useEffect(() => {
+    const wasPaused = pausedRef.current;
     pausedRef.current = paused;
     mediaLog('info', 'transcript pipeline pause changed', { roomId, paused });
+    if (wasPaused && !paused) {
+      const ctx = audioContextRef.current;
+      if (ctx && ctx.state === 'suspended') {
+        mediaLog('info', 'transcript resuming suspended audioContext on unpause', { roomId });
+        ctx.resume().catch((err) => {
+          mediaLog('warn', 'transcript audioContext resume on unpause failed', { roomId, reason: err.message });
+        });
+      }
+    }
   }, [paused, roomId]);
 
   useEffect(() => {
@@ -71,6 +82,7 @@ export default function useTranscript({ localAudioTrack, socket, roomId, enabled
 
         const stream = new MediaStream([mediaStreamTrack]);
         audioContext = new AudioContext({ sampleRate: 16000 });
+        audioContextRef.current = audioContext;
         await audioContext.audioWorklet.addModule('/audio-processor.js');
         source = audioContext.createMediaStreamSource(stream);
         workletNode = new AudioWorkletNode(audioContext, 'pcm-processor');
@@ -109,7 +121,7 @@ export default function useTranscript({ localAudioTrack, socket, roomId, enabled
             socketConnected: socketRef.current?.connected,
             trackState: mediaStreamTrack?.readyState,
             trackEnabled: mediaStreamTrack?.enabled,
-            audioContextState: audioContext?.state,
+            audioContextState: audioContextRef.current?.state,
           });
         }, 15000);
         healthTimer.unref?.();
@@ -156,6 +168,7 @@ export default function useTranscript({ localAudioTrack, socket, roomId, enabled
       mediaStreamTrack?.removeEventListener('ended', handleTrackEnded);
       mediaStreamTrack?.removeEventListener('mute', handleTrackMuted);
       mediaStreamTrack?.removeEventListener('unmute', handleTrackUnmuted);
+      audioContextRef.current = null;
 
       try {
         workletNode?.disconnect();

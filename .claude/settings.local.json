@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem *)",
+      "Bash(npm run *)",
+      "PowerShell(where.exe gh 2>$null; if \\($LASTEXITCODE -ne 0\\) { \"not found\" })",
+      "Bash(node --check server/src/index.js)",
+      "Bash(node --check server/src/socket/index.js)",
+      "Bash(node --check server/src/socket/candidateHandlers.js)",
+      "Bash(node --check server/src/services/deepgram/DeepgramManager.js)",
+      "Bash(git add *)"
+    ]
+  }
+}
