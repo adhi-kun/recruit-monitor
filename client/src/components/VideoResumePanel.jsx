@@ -11,16 +11,18 @@ export default function VideoResumePanel({
   candidateName,
   interviewerName,
   candidateAgoraUid,
+  sharedVideo,
+  onClearSharedVideo,
+  videoRef,
+  syncingRef,
 }) {
   const {
-    videoRef,
     uploadVideo,
     shareVideo,
     startRecording,
     stopRecording,
     isRecording,
-    sharedVideo,
-  } = useVideoResume({ socket, meetingId, role, candidateAgoraUid, candidateName, interviewerName });
+  } = useVideoResume({ socket, meetingId, role, candidateAgoraUid, candidateName, interviewerName, videoRef, syncingRef, sharedVideo });
 
   const fileInputRef = useRef(null);
 
@@ -77,9 +79,20 @@ export default function VideoResumePanel({
       {/* ── Shared video player ──────────────────────────────────────── */}
       {sharedVideo && (
         <div className="flex flex-col gap-3">
-          <p className="text-xs text-surface-400 font-medium uppercase tracking-wider">
-            Shared video
-          </p>
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-surface-400 font-medium uppercase tracking-wider">
+              Shared video
+            </p>
+            <button
+              onClick={onClearSharedVideo}
+              className="text-surface-500 hover:text-surface-300 transition-colors"
+              title="Dismiss video"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
           <video
             ref={videoRef}
             src={sharedVideo.signedUrl}

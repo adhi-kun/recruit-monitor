@@ -11,15 +11,15 @@ export default function useVideoResume({
   candidateAgoraUid,
   candidateName,
   interviewerName,
+  videoRef,
+  syncingRef,
+  sharedVideo,
 }) {
-  const videoRef           = useRef(null);
   const mediaRecorderRef   = useRef(null);
   const chunksRef          = useRef([]);
   const seekDebounceRef    = useRef(null);
-  const syncingRef         = useRef(false); // prevents emit feedback when applying remote sync
 
   const [isRecording, setIsRecording] = useState(false);
-  const [sharedVideo, setSharedVideo] = useState(null); // { videoId, signedUrl, sharedBy }
 
   // ── Upload ────────────────────────────────────────────────────────────
 
@@ -126,56 +126,6 @@ export default function useVideoResume({
     });
   }, [uploadVideo]);
 
-  // ── Remote sync event listeners ───────────────────────────────────────
-
-  useEffect(() => {
-    if (!socket) return;
-
-    const onVideoAvailable = (payload) => setSharedVideo(payload);
-
-    const onPlaySync = ({ currentTime }) => {
-      const video = videoRef.current;
-      if (!video) return;
-      syncingRef.current = true;
-      video.currentTime = currentTime;
-      video.play().catch(() => {}).finally(() => {
-        // Clear after a tick so the synchronous 'play' event fires first
-        Promise.resolve().then(() => { syncingRef.current = false; });
-      });
-    };
-
-    const onPauseSync = ({ currentTime }) => {
-      const video = videoRef.current;
-      if (!video) return;
-      syncingRef.current = true;
-      video.currentTime = currentTime;
-      video.pause();
-      syncingRef.current = false;
-    };
-
-    const onSeekSync = ({ currentTime }) => {
-      const video = videoRef.current;
-      if (!video) return;
-      syncingRef.current = true;
-      video.currentTime = currentTime;
-      // Clear after seeked fires
-      const clear = () => { syncingRef.current = false; video.removeEventListener('seeked', clear); };
-      video.addEventListener('seeked', clear, { once: true });
-    };
-
-    socket.on('video_available',  onVideoAvailable);
-    socket.on('video_play_sync',  onPlaySync);
-    socket.on('video_pause_sync', onPauseSync);
-    socket.on('video_seek_sync',  onSeekSync);
-
-    return () => {
-      socket.off('video_available',  onVideoAvailable);
-      socket.off('video_play_sync',  onPlaySync);
-      socket.off('video_pause_sync', onPauseSync);
-      socket.off('video_seek_sync',  onSeekSync);
-    };
-  }, [socket]);
-
   // ── Local video event emission ────────────────────────────────────────
   // Attaches after sharedVideo is set (video element is mounted by then)
 
@@ -213,15 +163,14 @@ export default function useVideoResume({
       video.removeEventListener('seeked', onSeeked);
       clearTimeout(seekDebounceRef.current);
     };
-  }, [socket, meetingId, sharedVideo]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [socket, meetingId, sharedVideo]); // videoRef and syncingRef are stable refs — intentionally excluded
 
   return {
-    videoRef,
     uploadVideo,
     shareVideo,
     startRecording,
     stopRecording,
     isRecording,
-    sharedVideo,
   };
 }

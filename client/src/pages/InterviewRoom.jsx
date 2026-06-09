@@ -82,6 +82,7 @@ function TabIcon({ id }) {
 function PanelContent({
   activeTab, historyOpened, socket, effectiveMeetingId,
   role, remoteUsers, candidateName, interviewerName, candidateAgoraUid, candidateId,
+  sharedVideo, onClearSharedVideo, videoRef, syncingRef,
 }) {
   return (
     <div className="flex-1 min-h-0 overflow-hidden">
@@ -107,6 +108,10 @@ function PanelContent({
           candidateName={candidateName}
           interviewerName={interviewerName}
           candidateAgoraUid={candidateAgoraUid}
+          sharedVideo={sharedVideo}
+          onClearSharedVideo={onClearSharedVideo}
+          videoRef={videoRef}
+          syncingRef={syncingRef}
         />
       )}
       {/* History stays mounted after first open to preserve scroll position */}
@@ -157,8 +162,11 @@ export default function InterviewRoom() {
   const [connectionLost,       setConnectionLost]       = useState(false);
   const [activeTab,            setActiveTab]            = useState('transcript');
   const [agoraCredentials,     setAgoraCredentials]     = useState(locState ?? null);
+  const [sharedVideo,          setSharedVideo]          = useState(null); // { videoId, signedUrl, sharedBy } | null
 
   const interruptedTimerRef = useRef(null);
+  const videoRef            = useRef(null);   // shared with VideoResumePanel for sync handlers
+  const syncingRef          = useRef(false);  // prevents emit feedback when applying remote sync
   const isMobile            = useMobile();
 
   const socketRole = role === 'interviewer' ? 'interviewer'
@@ -184,9 +192,10 @@ export default function InterviewRoom() {
 
   const effectiveMeetingId = meetingId ?? meetingIdParam;
 
+  const videoBadge = sharedVideo && activeTab !== 'video';
   const tabs = role === 'supervisor'
-    ? [{ id: 'transcript', label: 'Transcript' }, { id: 'notes', label: 'Notes' }, { id: 'video', label: 'Video' }, { id: 'history', label: 'History' }]
-    : [{ id: 'transcript', label: 'Transcript' }, { id: 'video', label: 'Video' }, { id: 'history', label: 'History' }];
+    ? [{ id: 'transcript', label: 'Transcript' }, { id: 'notes', label: 'Notes' }, { id: 'video', label: 'Video', badge: videoBadge }, { id: 'history', label: 'History' }]
+    : [{ id: 'transcript', label: 'Transcript' }, { id: 'video', label: 'Video', badge: videoBadge }, { id: 'history', label: 'History' }];
 
   const uidToName = useMemo(() => {
     const map = {};
@@ -321,6 +330,33 @@ export default function InterviewRoom() {
     const onNoteUpdated       = ({ noteId, body, updatedAt }) => updateNote({ noteId, body, updatedAt });
     const onNoteDeleted       = ({ noteId })                   => removeNote(noteId);
 
+    const onVideoAvailable = (payload) => { startTransition(() => setSharedVideo(payload)); };
+    const onPlaySync = ({ currentTime }) => {
+      const video = videoRef.current;
+      if (!video) return;
+      syncingRef.current = true;
+      video.currentTime = currentTime;
+      video.play().catch(() => {}).finally(() => {
+        Promise.resolve().then(() => { syncingRef.current = false; });
+      });
+    };
+    const onPauseSync = ({ currentTime }) => {
+      const video = videoRef.current;
+      if (!video) return;
+      syncingRef.current = true;
+      video.currentTime = currentTime;
+      video.pause();
+      syncingRef.current = false;
+    };
+    const onSeekSync = ({ currentTime }) => {
+      const video = videoRef.current;
+      if (!video) return;
+      syncingRef.current = true;
+      video.currentTime = currentTime;
+      const clear = () => { syncingRef.current = false; video.removeEventListener('seeked', clear); };
+      video.addEventListener('seeked', clear, { once: true });
+    };
+
     socket.on('connect',            onConnect);
     socket.on('disconnect',         onDisconnect);
     socket.on('meeting_attached',   onMeetingAttached);
@@ -330,6 +366,10 @@ export default function InterviewRoom() {
     socket.on('note_added',         onNoteAdded);
     socket.on('note_updated',       onNoteUpdated);
     socket.on('note_deleted',       onNoteDeleted);
+    socket.on('video_available',    onVideoAvailable);
+    socket.on('video_play_sync',    onPlaySync);
+    socket.on('video_pause_sync',   onPauseSync);
+    socket.on('video_seek_sync',    onSeekSync);
 
     queueMicrotask(() => hydrateMeeting(getAttachedMeeting(socketRole)));
 
@@ -343,6 +383,10 @@ export default function InterviewRoom() {
       socket.off('note_added',         onNoteAdded);
       socket.off('note_updated',       onNoteUpdated);
       socket.off('note_deleted',       onNoteDeleted);
+      socket.off('video_available',    onVideoAvailable);
+      socket.off('video_play_sync',    onPlaySync);
+      socket.off('video_pause_sync',   onPauseSync);
+      socket.off('video_seek_sync',    onSeekSync);
     };
   }, [socket, role, socketRole, applyMeetingStatus, setMeetingJoined, addSegment, setTranscriptionFailed, addNote, updateNote, removeNote, hydrateMeeting]);
 
@@ -400,10 +444,14 @@ export default function InterviewRoom() {
     effectiveMeetingId,
     role,
     remoteUsers,
-    candidateName:   resolvedCandidateName,
-    interviewerName: resolvedInterviewerName,
+    candidateName:      resolvedCandidateName,
+    interviewerName:    resolvedInterviewerName,
     candidateAgoraUid,
     candidateId,
+    sharedVideo,
+    onClearSharedVideo: () => setSharedVideo(null),
+    videoRef,
+    syncingRef,
   };
 
   // ── Render ────────────────────────────────────────────────────────────
@@ -463,7 +511,7 @@ export default function InterviewRoom() {
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
 
           {/* Video — full width, 16:9 aspect ratio */}
-          <div className="relative aspect-video w-full overflow-hidden flex-shrink-0">
+          <div className="relative aspect-video w-full overflow-hidden flex-shrink-0 max-h-[40vh]">
             <VideoGrid
               role={role}
               localVideoRef={localVideoRef}
@@ -538,7 +586,12 @@ export default function InterviewRoom() {
                     activeTab === tab.id ? 'text-primary-400' : 'text-surface-500 hover:text-surface-300'
                   }`}
                 >
-                  <TabIcon id={tab.id} />
+                  <span className="relative">
+                    <TabIcon id={tab.id} />
+                    {tab.badge && (
+                      <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-primary-400" />
+                    )}
+                  </span>
                 </button>
               ))}
             </div>
@@ -562,8 +615,8 @@ export default function InterviewRoom() {
           <div className="flex-1 min-h-0 flex overflow-hidden">
 
             {/* Video + participant panel — 60% */}
-            <div className="flex-[3] flex flex-col p-4 gap-4 overflow-hidden">
-              <div className="flex-1 min-h-0 rounded-lg overflow-hidden">
+            <div className="flex-[3] flex flex-col p-4 gap-4 min-h-0 overflow-hidden">
+              <div className="flex-1 min-h-0 max-h-full rounded-lg overflow-hidden">
                 <VideoGrid
                   role={role}
                   localVideoRef={localVideoRef}
@@ -582,7 +635,7 @@ export default function InterviewRoom() {
             </div>
 
             {/* Right sidebar — 40% */}
-            <div className="flex-[2] border-l border-surface-800 bg-surface-900/50 flex flex-col overflow-hidden">
+            <div className="flex-[2] border-l border-surface-800 bg-surface-900/50 flex flex-col min-h-0 overflow-hidden">
               {/* Tab bar */}
               <div className="flex border-b border-surface-700/50 flex-shrink-0">
                 {tabs.map((tab) => (
@@ -595,7 +648,10 @@ export default function InterviewRoom() {
                         : 'text-surface-400 border-transparent hover:text-surface-200'
                     }`}
                   >
-                    {tab.label}
+                    <span className="inline-flex items-center gap-1.5">
+                      {tab.label}
+                      {tab.badge && <span className="w-2 h-2 rounded-full bg-primary-400 flex-shrink-0" />}
+                    </span>
                   </button>
                 ))}
               </div>
