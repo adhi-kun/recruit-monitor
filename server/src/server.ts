@@ -10,7 +10,7 @@ import { logger } from './lib/logger.js';
 import { newId } from './lib/ids.js';
 import type { DomainError } from './lib/errors.js';
 import { pool, checkDbConnection } from './db/pool.js';
-import { waitForRedis } from './db/redis.js';
+import { waitForRedis, disconnectRedis } from './db/redis.js';
 import { BullScheduler, MemoryScheduler } from './scheduler/bullScheduler.js';
 import { recoverScheduledJobs } from './scheduler/recovery.js';
 import { startPresenceSweeper } from './scheduler/sweeper.js';
@@ -99,6 +99,7 @@ async function main(): Promise<void> {
   //     Single 5-second window: if Redis isn't ready, fall back to in-memory for everything.
   const redisAvailable = await waitForRedis(5_000);
   if (!redisAvailable) {
+    disconnectRedis(); // permanently stop ioredis reconnect loop to prevent log spam
     logger.warn('Redis unavailable — using in-memory scheduler and no Socket.IO Redis adapter');
   }
 

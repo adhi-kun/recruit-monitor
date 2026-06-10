@@ -31,6 +31,19 @@ function ensureCleanupTimer(): void {
   cleanupTimer.unref?.();
 }
 
+/** Deletes the rate-limit bucket for a (socket, event) pair.
+ *  Call this when a lifecycle transition (e.g. meeting ended) should not count
+ *  against the candidate's next attempt window. */
+export function resetSocketRateLimit(
+  socket: Socket,
+  eventName: string,
+  options?: Pick<RateLimitOptions, 'key'>,
+): void {
+  const userId = (socket.data as { user?: { userId?: string } }).user?.userId ?? socket.id;
+  const key = options?.key?.(socket) ?? `${socket.nsp.name}:${eventName}:${userId}`;
+  buckets.delete(key);
+}
+
 export function checkSocketRateLimit(
   socket: Socket,
   eventName: string,

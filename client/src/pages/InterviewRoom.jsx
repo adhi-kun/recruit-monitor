@@ -115,7 +115,7 @@ function PanelContent({
         />
       )}
       {/* History stays mounted after first open to preserve scroll position */}
-      <div className={activeTab !== 'history' ? 'hidden' : 'h-full overflow-hidden'}>
+      <div className={activeTab !== 'history' ? 'hidden' : 'h-full overflow-y-auto'}>
         {historyOpened && <HistoryPanel candidateId={candidateId} role={role} />}
       </div>
     </div>
@@ -616,7 +616,7 @@ export default function InterviewRoom() {
 
             {/* Video + participant panel — 60% */}
             <div className="flex-[3] flex flex-col p-4 gap-4 min-h-0 overflow-hidden">
-              <div className="flex-1 min-h-0 max-h-full rounded-lg overflow-hidden">
+              <div className="w-full aspect-video rounded-lg overflow-hidden flex-shrink-0">
                 <VideoGrid
                   role={role}
                   localVideoRef={localVideoRef}

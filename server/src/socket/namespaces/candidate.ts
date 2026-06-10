@@ -15,6 +15,7 @@ import { ForbiddenError, InvalidTransitionError, NotFoundError } from '../../lib
 import { logger } from '../../lib/logger.js';
 import type { CandidateSocket } from '../types.js';
 import { onSafe } from '../safeHandler.js';
+import { resetSocketRateLimit } from '../rateLimiter.js';
 import { pool } from '../../db/pool.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
 
@@ -130,7 +131,7 @@ export function registerCandidateNamespace(io: Server, deps: CandidateDeps): voi
       onSafe(socket, {
         event: 'start_session',
         schema: startSessionSchema,
-        rateLimit: { limit: 5, windowMs: 60_000 },
+        rateLimit: { limit: 20, windowMs: 60_000 },
       }, async (_payload, { ack }) => {
         try {
           if (socket.data.meetingId) {
@@ -152,7 +153,10 @@ export function registerCandidateNamespace(io: Server, deps: CandidateDeps): voi
               // Meeting not found — treat meetingId as stale, fall through.
             }
             // Meeting ended or missing — clear stale meetingId and allow new session.
+            // Also reset the rate-limit bucket so navigating back from an ended meeting
+            // doesn't exhaust the window before the candidate can start a new one.
             socket.data.meetingId = undefined;
+            resetSocketRateLimit(socket, 'start_session');
           }
 
           const { meetingId, agoraChannel } = await meetingService.createOpenMeeting(userId);

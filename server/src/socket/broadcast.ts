@@ -111,6 +111,8 @@ export class BroadcastHelper {
   /** Pushes each subscribed interviewer their own language-filtered list of open rooms.
    *  Results are cached in Redis per language (5s TTL) when Redis is available. */
   async openRoomsUpdate(): Promise<void> {
+    logger.info('openRoomsUpdate: starting');
+
     const r = redis; // capture once; stable null check throughout async calls
 
     // Invalidate stale cache so the first socket per language re-fetches from DB.
@@ -124,6 +126,8 @@ export class BroadcastHelper {
       this.io.of(INTERVIEWER_NSP).in('open_rooms_monitor').fetchSockets(),
       new Promise<[]>((resolve) => setTimeout(() => resolve([]), 3_000)),
     ]);
+
+    logger.info({ count: sockets.length }, 'openRoomsUpdate: sockets fetched');
 
     for (const s of sockets) {
       try {
@@ -142,9 +146,13 @@ export class BroadcastHelper {
           const rooms = await this.meetingService.getOpenMeetingsWithNames(lang);
           s.emit('open_rooms_update', { meetings: rooms });
         }
+
+        logger.debug({ socketId: s.id, lang }, 'openRoomsUpdate: emitted to socket');
       } catch (err) {
         logger.error({ err, socketId: s.id }, 'openRoomsUpdate: per-socket failed');
       }
     }
+
+    logger.info('openRoomsUpdate: done');
   }
 }
