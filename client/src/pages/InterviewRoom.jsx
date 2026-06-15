@@ -258,13 +258,23 @@ export default function InterviewRoom() {
         mergeCatchupData({ segments: transcriptBody.segments ?? [], notes: notesBody.notes ?? [] });
       });
 
+      // If we hydrated into an already-ended meeting (e.g. grace fired while disconnected),
+      // trigger the terminated UI path so the 5s countdown and redirect run — the
+      // meeting_status socket event was missed while offline so setTerminated is never
+      // called by onMeetingStatus for this case.
+      if ((attachedPayload?.status ?? meeting.status) === 'ended') {
+        clearAttachedMeeting(socketRole);
+        setTerminated(true);
+        return;
+      }
+
       if (attachedPayload?.agoraToken && attachedPayload?.uid != null) {
         setAgoraCredentials({ agoraToken: attachedPayload.agoraToken, uid: attachedPayload.uid });
       }
     } catch (err) {
       console.warn('Meeting hydration failed:', err);
     }
-  }, [effectiveMeetingId, setMeetingJoined, applyMeetingStatus, mergeCatchupData]);
+  }, [effectiveMeetingId, socketRole, setMeetingJoined, applyMeetingStatus, mergeCatchupData]);
 
   // Join Agora when credentials are available — joinChannel's internal guard prevents double-join
   useEffect(() => {

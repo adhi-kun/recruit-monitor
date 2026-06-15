@@ -26,7 +26,9 @@
       "Bash(echo \"EXIT:$?\")",
       "Bash(grep *)",
       "Bash(dir *)",
-      "Bash(Select-Object -ExpandProperty FullName)"
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "Bash(echo \"exit:$?\")",
+      "Bash(npx vitest *)"
     ]
   }
 }

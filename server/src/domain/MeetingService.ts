@@ -613,7 +613,11 @@ export class MeetingService {
       const meeting = meetingRows[0];
       if (!meeting) throw new NotFoundError(`Meeting ${meetingId} not found`);
 
-      guardMeetingTransition(meeting.status, 'end');
+      // 'grace_expired' only allows interrupted→ended; 'end' allows open|active|interrupted→ended.
+      // Using the narrower event when reason is grace_expired prevents a late-firing grace job
+      // from terminating a meeting that has already been reconnected to 'active'.
+      const transitionEvent = reason === 'grace_expired' ? 'grace_expired' : 'end';
+      guardMeetingTransition(meeting.status, transitionEvent);
 
       const now = new Date();
 
@@ -653,9 +657,12 @@ export class MeetingService {
 
       await this.deps.scheduler.cancel(`grace_expiry:${meetingId}`)
         .catch((err) => logger.error({ err, meetingId }, 'endMeeting: cancel grace timer failed'));
-      await this.deps.transcriptService.flush(meetingId);
-      this.deps.transcriptService.clearSeqCounter(meetingId);
-      this.deps.deepgramManager.stop(meetingId);
+      try {
+        await this.deps.transcriptService.flush(meetingId);
+      } finally {
+        this.deps.transcriptService.clearSeqCounter(meetingId);
+        this.deps.deepgramManager.stop(meetingId);
+      }
       logger.info({ meetingId, reason }, 'meeting ended');
     } catch (err) {
       await client.query('ROLLBACK').catch(() => {});

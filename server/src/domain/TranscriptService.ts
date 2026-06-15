@@ -57,12 +57,16 @@ interface BufferedSegment {
   params: AppendSegmentParams;
 }
 
-const BATCH_SIZE    = 20;
-const FLUSH_INTERVAL_MS = 500;
+const BATCH_SIZE         = 20;
+const FLUSH_INTERVAL_MS  = 500;
+const MAX_DRAIN_ATTEMPTS = 3;   // consecutive failures before explicit drain gives up
+const DRAIN_BACKOFF_MS   = 50;  // ms between retries in the bounded drain loop
 
 export class TranscriptService {
-  private readonly seqCounters   = new Map<string, number>();
-  private readonly segmentBuffer = new Map<string, BufferedSegment[]>();
+  private readonly seqCounters     = new Map<string, number>();
+  private readonly seqInitPromises = new Map<string, Promise<void>>();
+  private readonly segmentBuffer   = new Map<string, BufferedSegment[]>();
+  private readonly flushInFlight    = new Map<string, Promise<void>>();
   private readonly flushTimer: ReturnType<typeof setInterval>;
 
   constructor(private readonly deps: TranscriptServiceDeps) {
@@ -79,13 +83,28 @@ export class TranscriptService {
    */
   async appendSegment(params: AppendSegmentParams): Promise<{ id: string; seq: number }> {
     if (!this.seqCounters.has(params.meetingId)) {
-      const { rows } = await this.deps.pool.query<{ max_seq: number }>(
-        `SELECT COALESCE(MAX(seq), 0) AS max_seq
-           FROM transcript_segments
-          WHERE meeting_id = $1`,
-        [params.meetingId],
-      );
-      this.seqCounters.set(params.meetingId, rows[0]!.max_seq);
+      // Single-flight init: all concurrent first-calls for the same meeting share ONE
+      // MAX(seq) query. The promise is stored before the first await, so any concurrent
+      // caller that checks seqInitPromises before the query resolves finds it and waits
+      // on the same Promise — no second query is issued, no two callers bootstrap from
+      // the same max and produce duplicate seq values.
+      if (!this.seqInitPromises.has(params.meetingId)) {
+        const p = this.deps.pool
+          .query<{ max_seq: number }>(
+            `SELECT COALESCE(MAX(seq), 0) AS max_seq
+               FROM transcript_segments
+              WHERE meeting_id = $1`,
+            [params.meetingId],
+          )
+          .then(({ rows }) => {
+            this.seqCounters.set(params.meetingId, rows[0]!.max_seq);
+          })
+          .finally(() => {
+            this.seqInitPromises.delete(params.meetingId);
+          });
+        this.seqInitPromises.set(params.meetingId, p);
+      }
+      await this.seqInitPromises.get(params.meetingId)!;
     }
 
     const seq = this.seqCounters.get(params.meetingId)! + 1;
@@ -106,27 +125,86 @@ export class TranscriptService {
 
   /**
    * Flushes buffered segments to the DB.
-   * If meetingId is given, flushes only that meeting (used on meeting end).
-   * If omitted, flushes all buffered meetings (used by the interval timer).
+   *
+   * Interval path (no meetingId): fires per-meeting writes in parallel, skips any
+   * meeting already being written (avoids double-write on slow DB).
+   *
+   * Explicit path (meetingId given, called by endMeeting or BATCH_SIZE trigger):
+   * awaits any in-flight write first, then drains until the buffer is fully empty.
+   * Caps consecutive failures at MAX_DRAIN_ATTEMPTS so a permanently-down DB
+   * degrades to "last segments lost" rather than an infinite loop.
    */
   async flush(meetingId?: string): Promise<void> {
-    const targets = meetingId !== undefined
-      ? (this.segmentBuffer.has(meetingId) ? [meetingId] : [])
-      : Array.from(this.segmentBuffer.keys());
+    if (meetingId !== undefined) {
+      const existing = this.flushInFlight.get(meetingId);
+      if (existing) await existing;
+      let consecutiveFailures = 0;
+      while ((this.segmentBuffer.get(meetingId)?.length ?? 0) > 0) {
+        const ok = await this.writeOnce(meetingId);
+        if (ok) {
+          consecutiveFailures = 0;
+        } else {
+          consecutiveFailures++;
+          if (consecutiveFailures >= MAX_DRAIN_ATTEMPTS) {
+            logger.error(
+              { meetingId, buffered: this.segmentBuffer.get(meetingId)?.length ?? 0 },
+              'transcript drain: max consecutive failures — remaining segments lost',
+            );
+            break;
+          }
+          await new Promise<void>((resolve) => setTimeout(resolve, DRAIN_BACKOFF_MS));
+        }
+      }
+      return;
+    }
 
-    for (const mid of targets) {
+    // Interval path: launch writes in parallel; skip meetings already in flight.
+    for (const mid of Array.from(this.segmentBuffer.keys())) {
+      if (this.flushInFlight.has(mid)) continue;
       const buffer = this.segmentBuffer.get(mid);
       if (!buffer || buffer.length === 0) {
         this.segmentBuffer.delete(mid);
         continue;
       }
-      this.segmentBuffer.delete(mid);
-      try {
-        await this.insertBatch(buffer);
-      } catch (err) {
-        logger.error({ err, meetingId: mid, count: buffer.length }, 'transcript batch flush failed');
-      }
+      void this.writeOnce(mid);
     }
+  }
+
+  // Snapshots the current buffer for one meeting and starts the DB write.
+  // Returns true if the write succeeded, false on any error (after logging).
+  // Transient errors: snapshot is re-prepended for next attempt.
+  // 23505 unique violation: snapshot is dropped (retrying identical seqs never succeeds).
+  // Stores the in-flight promise in flushInFlight so interval skips this meeting.
+  private writeOnce(mid: string): Promise<boolean> {
+    const buffer   = this.segmentBuffer.get(mid) ?? [];
+    const snapshot = buffer.splice(0);
+    if (snapshot.length === 0) return Promise.resolve(true);
+
+    const p: Promise<boolean> = this.insertBatch(snapshot)
+      .then((): true => true)
+      .catch((err: unknown): false => {
+        const isUniqueViolation = (err as { code?: string })?.code === '23505';
+        if (isUniqueViolation) {
+          logger.error(
+            { err, meetingId: mid, count: snapshot.length },
+            'transcript batch flush: seq collision (23505) — batch dropped',
+          );
+        } else {
+          logger.error(
+            { err, meetingId: mid, count: snapshot.length },
+            'transcript batch flush failed — retained for retry',
+          );
+          const live = this.segmentBuffer.get(mid) ?? [];
+          this.segmentBuffer.set(mid, [...snapshot, ...live]);
+        }
+        return false;
+      })
+      .finally(() => {
+        this.flushInFlight.delete(mid);
+      });
+
+    this.flushInFlight.set(mid, p.then(() => undefined));
+    return p;
   }
 
   private async insertBatch(segments: BufferedSegment[]): Promise<void> {
