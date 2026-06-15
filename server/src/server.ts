@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { env } from './config/env.js';
 import http from 'http';
+import { readFileSync } from 'fs';
 import type { IncomingMessage, ServerResponse } from 'http';
 import express, { type Request, type Response, type NextFunction } from 'express';
 import cors from 'cors';
@@ -89,6 +90,13 @@ let sessionService!: SessionService;
 // ── Boot sequence ─────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
+  // Log actual FD limits at boot so we can observe the real ceiling on Railway.
+  try {
+    const nofile = readFileSync('/proc/self/limits', 'utf8')
+      .split('\n').find((l) => /open files/i.test(l))?.trim();
+    if (nofile) logger.info({ nofile }, 'process FD limits at boot');
+  } catch { /* /proc not available on non-Linux dev environments */ }
+
   // 1. Env is already validated at import time (config/env.ts crashes on missing vars).
 
   // 2. Verify database connectivity before accepting traffic.

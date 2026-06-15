@@ -11,4 +11,4 @@ COPY src ./src
 
 EXPOSE 4000
 
-CMD ["npm", "start"]
+CMD ["sh", "-c", "ulimit -n 65536 && exec node --import tsx/esm src/server.ts"]
