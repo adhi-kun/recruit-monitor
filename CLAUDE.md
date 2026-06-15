@@ -35,15 +35,15 @@ cd client && npm run lint # ESLint (client only; no server-side lint config)
 
 **Supabase env vars are required at startup** — `server/src/lib/supabase.ts` is the live Supabase client; it reads from `config/env.ts` which exits with code 1 on missing vars.
 
-**`_sv_` supervisor prefix** — supervisor Agora UIDs are prefixed `_sv_` (set in `server/src/socket/namespaces/interviewer.ts`). `client/src/hooks/useAgora.js` filters these out of `remoteUsers`. Never change this prefix without updating both sides.
+**Supervisor stealth** — enforced by two independent mechanisms: (1) the server issues a `subscriber`-only Agora token (`server/src/socket/namespaces/supervisor.ts`, `role: 'subscriber'`), which Agora's media servers enforce at the protocol level; (2) `client/src/hooks/useAgora.js` skips track creation and `client.publish()` entirely for `role === 'supervisor'` (lines 167–211). A supervisor never triggers `user-published` on other clients, so the supervisor UID is never added to `remoteUsers` — no client-side prefix filter is used or needed.
 
 ## Socket.IO Namespaces
 
 | Namespace | Auth | Notes |
 |-----------|------|-------|
 | `/interviewer` | JWT required | Creates/ends meetings, edits transcripts — `server/src/socket/namespaces/interviewer.ts` |
-| `/candidate` | Room code (+ optional JWT) | Sends audio chunks for Deepgram — `server/src/socket/namespaces/candidate.ts` |
-| `/supervisor` | JWT required | Stealth — UID prefixed `_sv_`, no audio/video publish, filtered from client view — `server/src/socket/namespaces/supervisor.ts` |
+| `/candidate` | JWT required (role: `candidate`) | Sends audio chunks for Deepgram — `server/src/socket/namespaces/candidate.ts` |
+| `/supervisor` | JWT required (role: `supervisor`) | Stealth — subscriber-only Agora token; skips track creation/publish client-side; never fires `user-published` on other clients — `server/src/socket/namespaces/supervisor.ts` |
 
 ## Environment Variables
 
