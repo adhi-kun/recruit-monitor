@@ -56,6 +56,7 @@ export default function useTranscript({ localAudioTrack, socket, enabled, paused
     let source = null;
     let workletNode = null;
     let mediaStreamTrack = null;
+    let rawStream = null;
     let healthTimer = null;
     emittedChunksRef.current = 0;
     pipelineIdRef.current = localAudioTrack;
@@ -103,6 +104,7 @@ export default function useTranscript({ localAudioTrack, socket, enabled, paused
       mediaStreamTrack?.removeEventListener('ended', handleTrackEnded);
       mediaStreamTrack?.removeEventListener('mute', handleTrackMuted);
       mediaStreamTrack?.removeEventListener('unmute', handleTrackUnmuted);
+      rawStream?.getTracks().forEach((t) => t.stop());
       audioContextRef.current = null;
       try {
         workletNode?.disconnect();
@@ -116,7 +118,23 @@ export default function useTranscript({ localAudioTrack, socket, enabled, paused
 
     async function startPipeline() {
       try {
-        mediaStreamTrack = localAudioTrack.getMediaStreamTrack();
+        // NOTE: Agora's createMicrophoneAudioTrack() always runs before this
+        // getUserMedia call (startPipeline is gated on localAudioTrack existing).
+        // On older iOS Safari (<17), a second getUserMedia after an existing
+        // audio session may fail — the catch below handles this by falling back
+        // to the Agora track, so the call is never broken, only Deepgram's audio
+        // quality degrades to the Agora-processed stream.
+        try {
+          rawStream = await navigator.mediaDevices.getUserMedia({
+            audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+          });
+          mediaStreamTrack = rawStream.getAudioTracks()[0];
+          mediaLog('info', 'transcript using raw mic stream (Agora DSP bypassed)');
+        } catch (rawErr) {
+          mediaLog('warn', 'transcript raw mic unavailable — falling back to Agora track', { reason: rawErr.message });
+          mediaStreamTrack = localAudioTrack.getMediaStreamTrack();
+        }
+
         if (!mediaStreamTrack || mediaStreamTrack.readyState === 'ended') {
           mediaLog('warn', 'transcript media track unavailable');
           return;
@@ -126,7 +144,7 @@ export default function useTranscript({ localAudioTrack, socket, enabled, paused
         mediaStreamTrack.addEventListener('mute',    handleTrackMuted);
         mediaStreamTrack.addEventListener('unmute',  handleTrackUnmuted);
 
-        const stream = new MediaStream([mediaStreamTrack]);
+        const stream = rawStream ?? new MediaStream([mediaStreamTrack]);
         audioContext = new AudioContext({ sampleRate: 16000 });
         audioContextRef.current = audioContext;
         await audioContext.audioWorklet.addModule('/audio-processor.js');
@@ -134,16 +152,32 @@ export default function useTranscript({ localAudioTrack, socket, enabled, paused
         workletNode = new AudioWorkletNode(audioContext, 'pcm-processor');
         source.connect(workletNode);
 
+        let accumBuffer = new Uint8Array(0);
+        let lastEmitTime = Date.now();
+        const EMIT_BYTES = 4096;       // ~128ms at 16 kHz 16-bit mono
+        const EMIT_INTERVAL_MS = 100;
+
         workletNode.port.onmessage = async (event) => {
           if (destroyed || pausedRef.current) return;
           if (audioContext?.state === 'suspended') {
             try { await audioContext.resume(); } catch { /* non-critical */ }
           }
-          const buffer = event.data;
+          const chunk = event.data;
+          if (!chunk || chunk.byteLength === 0) return;
+
+          const incoming = new Uint8Array(chunk);
+          const merged = new Uint8Array(accumBuffer.length + incoming.length);
+          merged.set(accumBuffer);
+          merged.set(incoming, accumBuffer.length);
+          accumBuffer = merged;
+
+          const now = Date.now();
           const sock = socketRef.current;
-          if (buffer && buffer.byteLength > 0 && sock?.connected) {
-            sock.emit('audio_chunk', buffer);
+          if (sock?.connected && (accumBuffer.length >= EMIT_BYTES || now - lastEmitTime >= EMIT_INTERVAL_MS)) {
+            sock.emit('audio_chunk', accumBuffer.buffer);
             emittedChunksRef.current++;
+            accumBuffer = new Uint8Array(0);
+            lastEmitTime = now;
           }
         };
 

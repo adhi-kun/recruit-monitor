@@ -114,12 +114,14 @@ export class DeepgramManager {
 
     const client = this.dg.listen.live({
       model:            'nova-2',
-      language:         'en-US',
+      language:         'en-IN',
       encoding:         'linear16',
       sample_rate:      16_000,
       channels:         1,
       interim_results:  true,
-      endpointing:      300,
+      smart_format:     true,
+      endpointing:      500,
+      utterance_end_ms: 1000,
     });
     session.client = client;
 
