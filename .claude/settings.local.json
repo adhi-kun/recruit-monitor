@@ -28,7 +28,21 @@
       "Bash(dir *)",
       "Bash(Select-Object -ExpandProperty FullName)",
       "Bash(echo \"exit:$?\")",
-      "Bash(npx vitest *)"
+      "Bash(npx vitest *)",
+      "Bash(mkdir -p src/_legacy_unused/lib src/_legacy_unused/middleware src/_legacy_unused/routes src/_legacy_unused/services/deepgram src/_legacy_unused/socket src/_legacy_unused/state src/_legacy_unused/utils)",
+      "Bash(mv src/config.js src/_legacy_unused/config.js)",
+      "Bash(mv src/lib/supabase.js src/_legacy_unused/lib/supabase.js)",
+      "Bash(mv src/middleware/auth.js src/_legacy_unused/middleware/auth.js)",
+      "Bash(mv src/middleware/authMiddleware.js src/_legacy_unused/middleware/authMiddleware.js)",
+      "Bash(git stash *)",
+      "Bash(git commit *)",
+      "Bash(xargs cat -n)",
+      "Bash(kill %1)",
+      "Bash(wait)",
+      "Bash(docker run *)",
+      "Bash(git restore *)",
+      "Skill(run)",
+      "PowerShell(railway status *)"
     ]
   }
 }
