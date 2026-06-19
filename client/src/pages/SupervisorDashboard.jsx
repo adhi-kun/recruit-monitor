@@ -148,7 +148,7 @@ export default function SupervisorDashboard() {
         return;
       }
 
-      const { agoraToken, agoraChannel, uid, segments, notes, participantUids } = ack.data;
+      const { agoraToken, agoraChannel, uid, segments, notes, participantUids, activeVideo } = ack.data;
 
       if (segments != null || notes != null) {
         setInitialData({ segments: segments ?? [], notes: notes ?? [] });
@@ -166,7 +166,7 @@ export default function SupervisorDashboard() {
         candidateAgoraUid:   participantUids?.candidateUid ?? null,
       });
 
-      navigate(`/room/${meeting.id}`, { state: { agoraToken, uid } });
+      navigate(`/room/${meeting.id}`, { state: { agoraToken, uid, activeVideo } });
     });
   }, [joiningId, navigate, setMeetingJoined, setInitialData]);
 
