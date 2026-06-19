@@ -228,6 +228,17 @@ export default function InterviewRoom() {
     const token = tokenStorage.get();
     if (!token) return;
 
+    // activeVideo is self-contained in the cached meeting_attached payload — restore it
+    // here so a video approved/shared on a prior meeting still shows up on this one even
+    // when the real meeting_attached event fired before InterviewRoom ever mounted
+    // (e.g. while still on the waiting room / dashboard page).
+    if (attachedPayload?.activeVideo) {
+      startTransition(() => {
+        setActiveVideo(attachedPayload.activeVideo);
+        setSharedVideo(attachedPayload.activeVideo);
+      });
+    }
+
     try {
       const lastSeq = useTranscriptStore
         .getState()
@@ -282,7 +293,7 @@ export default function InterviewRoom() {
     } catch (err) {
       console.warn('Meeting hydration failed:', err);
     }
-  }, [effectiveMeetingId, socketRole, setMeetingJoined, applyMeetingStatus, mergeCatchupData]);
+  }, [effectiveMeetingId, socketRole, setMeetingJoined, applyMeetingStatus, mergeCatchupData, setActiveVideo, setSharedVideo]);
 
   // Join Agora when credentials are available — joinChannel's internal guard prevents double-join
   useEffect(() => {
