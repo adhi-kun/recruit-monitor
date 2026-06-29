@@ -8,7 +8,7 @@ import type { DeepgramManager } from '../../lib/DeepgramManager.js';
 import type { BroadcastHelper } from '../broadcast.js';
 import { requireJwtSocket } from '../middleware/requireJwtSocket.js';
 import { attachReconnectSession } from '../middleware/attachReconnectSession.js';
-import { audioChunkSchema, heartbeatSchema, startSessionSchema } from '../schemas/candidate.js';
+import { audioChunkSchema, heartbeatSchema, startSessionSchema, candidateLeaveMeetingSchema } from '../schemas/candidate.js';
 import { addNoteSchema, updateNoteSchema, deleteNoteSchema } from '../schemas/interviewer.js';
 import { shareVideoSchema, videoSyncSchema } from '../schemas/video.js';
 import { ForbiddenError, NotFoundError } from '../../lib/errors.js';
@@ -216,6 +216,59 @@ export function registerCandidateNamespace(io: Server, deps: CandidateDeps): voi
     }, async () => {
       // Heartbeats are a no-op in the new flow — presence is managed via meeting status.
       // Keep the handler so existing client code doesn't cause unknown-event warnings.
+    });
+
+    // ── Explicit leave (End Call button) ──────────────────────────────────
+    // Mirrors the disconnect handler's open/active branches so the server is
+    // notified immediately rather than waiting for socket disconnect.
+
+    onSafe(socket, {
+      event: 'candidate_leave_meeting',
+      schema: candidateLeaveMeetingSchema,
+      rateLimit: { limit: 10, windowMs: 60_000 },
+    }, async ({ meetingId: leaveMeetingId }, { ack }) => {
+      if (!socket.rooms.has(`meeting:${leaveMeetingId}`)) {
+        ack({ ok: false, error: 'Not in meeting', code: 'FORBIDDEN' });
+        return;
+      }
+
+      try {
+        const meeting = await meetingService.getMeeting(leaveMeetingId);
+
+        if (meeting.candidateId !== userId) {
+          ack({ ok: false, error: 'Not your meeting', code: 'FORBIDDEN' });
+          return;
+        }
+
+        if (meeting.status === 'open') {
+          await meetingService.endMeeting(leaveMeetingId, 'candidate_left');
+          broadcast.meetingStatus(leaveMeetingId, 'ended');
+          broadcast.openRoomsUpdate()
+            .catch((err) => logger.error({ err, meetingId: leaveMeetingId }, 'openRoomsUpdate after candidate_leave_meeting failed'));
+        } else if (meeting.status === 'active') {
+          await meetingService.onParticipantDisconnect(leaveMeetingId, userId);
+          broadcast.meetingStatus(leaveMeetingId, 'interrupted');
+        }
+        // Any other status (ended, interrupted, etc.) — idempotent no-op.
+
+        await socket.leave(`meeting:${leaveMeetingId}`);
+        socket.data.meetingId     = undefined;
+        socket.data.meetingStatus = undefined;
+
+        ack({ ok: true });
+        logger.info({ socketId: socket.id, userId, meetingId: leaveMeetingId, prevStatus: meeting.status }, 'candidate_leave_meeting processed');
+      } catch (err) {
+        if (err instanceof NotFoundError) {
+          // Meeting already gone — treat as already ended, still clean up socket state.
+          await socket.leave(`meeting:${leaveMeetingId}`);
+          socket.data.meetingId     = undefined;
+          socket.data.meetingStatus = undefined;
+          ack({ ok: true });
+        } else {
+          logger.error({ err, userId, meetingId: leaveMeetingId }, 'candidate_leave_meeting failed');
+          ack({ ok: false, error: 'Internal error', code: 'INTERNAL_ERROR' });
+        }
+      }
     });
 
     // ── Audio forwarding to Deepgram ──────────────────────────────────────

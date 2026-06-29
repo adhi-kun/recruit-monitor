@@ -489,8 +489,11 @@ export default function InterviewRoom() {
   useEffect(() => () => clearInterval(interruptedTimerRef.current), []);
 
   const handleEndCall = useCallback(async () => {
+    const resolvedMeetingId = meetingId ?? meetingIdParam;
     if (role === 'interviewer') {
-      socket.emit('end_meeting', { meetingId: meetingId ?? meetingIdParam, reason: 'interviewer_ended' });
+      socket.emit('end_meeting', { meetingId: resolvedMeetingId, reason: 'interviewer_ended' });
+    } else if (role === 'candidate') {
+      socket.emit('candidate_leave_meeting', { meetingId: resolvedMeetingId });
     }
     await leaveChannel();
     clearMeeting();
@@ -499,7 +502,10 @@ export default function InterviewRoom() {
       clearAttachedMeeting('interviewer');
       navigate('/interviewer');
     } else if (role === 'supervisor') navigate('/supervisor');
-    else navigate('/candidate');
+    else {
+      clearAttachedMeeting('candidate');
+      navigate('/candidate');
+    }
   }, [role, socket, meetingId, meetingIdParam, leaveChannel, clearMeeting, clearTranscript, navigate]);
 
   const handleApproveClick = useCallback((videoId) => {
