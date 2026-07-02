@@ -187,7 +187,7 @@ export default function useAgora({ role, channelName }) {
 
         // Video track
         try {
-          const videoTrack = await AgoraRTC.createCameraVideoTrack();
+          const videoTrack = await AgoraRTC.createCameraVideoTrack({ facingMode: 'user' });
           if (!mountedRef.current) { videoTrack.close(); return; }
           videoTrack.on('track-ended', () =>
             mediaLog('warn', 'agora video track ended', { role, channelName }),

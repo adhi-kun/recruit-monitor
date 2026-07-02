@@ -23,7 +23,7 @@ export default function CandidateWaitingRoom() {
 
   useEffect(() => {
     let cancelled = false;
-    navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'user' } }, audio: true })
       .then((stream) => {
         if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
         streamRef.current = stream;
@@ -102,7 +102,7 @@ export default function CandidateWaitingRoom() {
       setCamEnabled(false);
     } else {
       try {
-        const s = await navigator.mediaDevices.getUserMedia({ video: true });
+        const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'user' } } });
         const [track] = s.getVideoTracks();
         if (track) {
           if (!streamRef.current) {
