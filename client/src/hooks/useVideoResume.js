@@ -15,11 +15,14 @@ export default function useVideoResume({
   syncingRef,
   sharedVideo,
 }) {
-  const mediaRecorderRef   = useRef(null);
-  const chunksRef          = useRef([]);
-  const seekDebounceRef    = useRef(null);
+  const mediaRecorderRef      = useRef(null);
+  const chunksRef             = useRef([]);
+  const seekDebounceRef       = useRef(null);
+  const recordingIntervalRef  = useRef(null);
 
-  const [isRecording, setIsRecording] = useState(false);
+  const [isRecording,           setIsRecording]           = useState(false);
+  const [isProcessingRecording, setIsProcessingRecording] = useState(false);
+  const [recordingSeconds,      setRecordingSeconds]      = useState(0);
 
   // ── Upload ────────────────────────────────────────────────────────────
 
@@ -102,6 +105,10 @@ export default function useVideoResume({
     };
 
     recorder.start(1000);
+    setRecordingSeconds(0);
+    recordingIntervalRef.current = setInterval(() => {
+      setRecordingSeconds((s) => s + 1);
+    }, 1000);
     mediaRecorderRef.current = recorder;
     setIsRecording(true);
   }, [candidateAgoraUid]);
@@ -109,8 +116,8 @@ export default function useVideoResume({
   const stopRecording = useCallback(() => {
     return new Promise((resolve, reject) => {
       const recorder = mediaRecorderRef.current;
-      if (!recorder) {
-        reject(new Error('No recording in progress'));
+      if (!recorder || recorder.state === 'inactive') {
+        reject(new Error('No active recording'));
         return;
       }
 
@@ -124,13 +131,22 @@ export default function useVideoResume({
           reject(err);
         } finally {
           mediaRecorderRef.current = null;
-          setIsRecording(false);
+          setIsProcessingRecording(false);
         }
       };
 
       recorder.stop();
+      clearInterval(recordingIntervalRef.current);
+      recordingIntervalRef.current = null;
+      setIsRecording(false);
+      setIsProcessingRecording(true);
     });
   }, [uploadVideo]);
+
+  // ── Recording interval cleanup on unmount ─────────────────────────────
+  useEffect(() => {
+    return () => { clearInterval(recordingIntervalRef.current); };
+  }, []);
 
   // ── Local video event emission ────────────────────────────────────────
   // Attaches after sharedVideo is set (video element is mounted by then)
@@ -178,5 +194,7 @@ export default function useVideoResume({
     startRecording,
     stopRecording,
     isRecording,
+    isProcessingRecording,
+    recordingSeconds,
   };
 }

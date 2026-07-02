@@ -12,6 +12,8 @@ function formatApprovedAt(isoString) {
   }
 }
 
+const formatDuration = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+
 export default function VideoResumePanel({
   socket,
   meetingId,
@@ -33,6 +35,8 @@ export default function VideoResumePanel({
     startRecording,
     stopRecording,
     isRecording,
+    isProcessingRecording,
+    recordingSeconds,
   } = useVideoResume({ socket, meetingId, role, candidateAgoraUid, candidateName, interviewerName, videoRef, syncingRef, sharedVideo });
 
   const fileInputRef = useRef(null);
@@ -218,25 +222,35 @@ export default function VideoResumePanel({
             <div className="border-t border-surface-700/50 pt-3 flex flex-col gap-2">
               <p className="text-xs text-surface-500">Or record live candidate video</p>
 
-              {!isRecording ? (
+              {!isRecording && !isProcessingRecording ? (
                 <button
                   onClick={() => {
                     setRecordError(null);
                     startRecording(remoteUsers);
                   }}
-                  disabled={isRecording}
                   className="w-full py-2.5 px-4 rounded-xl border border-surface-700 text-surface-300 text-sm hover:border-danger-500/50 hover:text-danger-400 transition-colors flex items-center gap-2"
                 >
                   <span className="w-2.5 h-2.5 rounded-full bg-danger-500 flex-shrink-0" />
                   Record candidate
                 </button>
-              ) : (
+              ) : isRecording ? (
                 <button
                   onClick={handleStopRecording}
                   className="w-full py-2.5 px-4 rounded-xl border border-danger-500/50 bg-danger-500/10 text-danger-400 text-sm font-medium flex items-center gap-2 transition-colors hover:bg-danger-500/20"
                 >
                   <span className="w-2.5 h-2.5 rounded-full bg-danger-500 animate-pulse flex-shrink-0" />
-                  Stop recording
+                  Stop recording · {formatDuration(recordingSeconds)}
+                </button>
+              ) : (
+                <button
+                  disabled
+                  className="w-full py-2.5 px-4 rounded-xl border border-surface-700 bg-surface-800/50 text-surface-400 text-sm font-medium flex items-center gap-2 opacity-60 cursor-not-allowed"
+                >
+                  <svg className="w-4 h-4 text-surface-400 animate-spin flex-shrink-0" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                  </svg>
+                  Processing recording…
                 </button>
               )}
 

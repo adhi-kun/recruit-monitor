@@ -273,8 +273,8 @@ export default function InterviewRoom() {
           interviewerId:       meeting.interviewerId,
           interviewerName:     meeting.interviewerName ?? null,
           candidateName:       meeting.candidateName ?? null,
-          interviewerAgoraUid: attachedPayload?.participantUids?.interviewerUid ?? undefined,
-          candidateAgoraUid:   attachedPayload?.participantUids?.candidateUid   ?? undefined,
+          interviewerAgoraUid: attachedPayload?.participantUids?.interviewerUid ?? meeting.interviewerAgoraUid ?? undefined,
+          candidateAgoraUid:   attachedPayload?.participantUids?.candidateUid   ?? meeting.candidateAgoraUid   ?? undefined,
         });
         applyMeetingStatus({ meetingId: meeting.id, status: attachedPayload?.status ?? meeting.status });
         mergeCatchupData({ segments: transcriptBody.segments ?? [], notes: notesBody.notes ?? [] });
