@@ -313,9 +313,25 @@ export default function InterviewRoom() {
   useEffect(() => {
     if (!socket) return;
 
-    const onConnect    = () => {
+    const onConnect = () => {
       setConnectionLost(false);
-      hydrateMeeting(getAttachedMeeting(socketRole));
+      // Supervisor has no server-side resumeOrAttachCurrentMeeting() and never
+      // receives meeting_attached, so after any reconnect the new socket has zero
+      // room memberships. Re-emit join_room explicitly so the server calls
+      // socket.join(`meeting:${id}`) again.
+      if (role === 'supervisor' && socket && meetingIdParam) {
+        socket.emit('join_room', { meetingId: meetingIdParam }, (ack) => {
+          if (!ack?.ok) return;
+          if (ack.data?.activeVideo) {
+            startTransition(() => {
+              setActiveVideo(ack.data.activeVideo);
+              setSharedVideo(ack.data.activeVideo);
+            });
+          }
+        });
+      } else {
+        hydrateMeeting(getAttachedMeeting(socketRole));
+      }
     };
     const onDisconnect = () => setConnectionLost(true);
 
@@ -458,7 +474,7 @@ export default function InterviewRoom() {
       socket.off('video_pause_sync',   onPauseSync);
       socket.off('video_seek_sync',    onSeekSync);
     };
-  }, [socket, role, socketRole, applyMeetingStatus, setMeetingJoined, addSegment, setTranscriptionFailed, addNote, updateNote, removeNote, hydrateMeeting, setActiveVideo]);
+  }, [socket, role, socketRole, meetingIdParam, applyMeetingStatus, setMeetingJoined, addSegment, setTranscriptionFailed, addNote, updateNote, removeNote, hydrateMeeting, setActiveVideo]);
 
   // Terminated countdown → redirect
   useEffect(() => {
